@@ -43,6 +43,19 @@ pub enum Error {
     #[error("write verification failed for {path}; the original was restored from backup")]
     VerifyFailed { path: PathBuf },
 
+    #[error(
+        "applying the account snapshot failed ({config_error}), and rolling back {creds_path} \
+         afterwards also failed: {rollback_source}\n\
+         the credentials and config files may now disagree about which account is active \
+         and must be checked by hand"
+    )]
+    ApplyRollbackFailed {
+        creds_path: PathBuf,
+        config_error: String,
+        #[source]
+        rollback_source: Box<Error>,
+    },
+
     #[error("timed out after {0} seconds waiting for a new login")]
     LoginTimeout(u64),
 }
