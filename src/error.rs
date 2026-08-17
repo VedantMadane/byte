@@ -80,6 +80,9 @@ pub enum Error {
 
     #[error("timed out after {0} seconds waiting for a new login")]
     LoginTimeout(u64),
+
+    #[error("{action} needs confirmation; re-run with --yes to proceed without prompting")]
+    ConfirmationRequired { action: String },
 }
 
 /// Convenience alias used throughout the crate.

@@ -62,12 +62,14 @@ byte switch personal
 | `byte switch <name>` | Switch to a stored account |
 | `byte capture` | Save the currently logged-in account |
 | `byte add [--timeout <secs>]` | Log out, then save the next account you log in as (default 300s) |
-| `byte remove <name>` | Forget a stored account |
+| `byte remove <name> [--yes]` | Forget a stored account (irreversible; prompts for confirmation unless `--yes` is given) |
 | `byte rename <name> <label>` | Change an account's display label |
 
 `<name>` matches a label, an email address, or an account UUID prefix. Every
 command accepts `--json` for machine-readable output on stdout; status
 messages always go to stderr, so `--json` output can be piped safely.
+`byte remove` requires `--yes` under `--json` or when standard input isn't a
+terminal, since it can't prompt in either case.
 
 See [`man/byte.md`](man/byte.md) for the full reference, or run `byte --help`.
 

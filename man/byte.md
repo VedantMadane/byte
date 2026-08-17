@@ -36,9 +36,11 @@ plugins, and MCP server tokens are shared across all accounts.
 : Log Claude Code out, then wait for you to log in as a different account and
   save it automatically. Defaults to 300 seconds.
 
-**remove** *NAME*
+**remove** *NAME* \[**--yes**]
 : Forget a stored account, deleting both its metadata and its stored
-  credentials.
+  credentials. Unlike every other write byte performs, this has no backup and
+  cannot be undone. Prompts for confirmation when standard input is a
+  terminal and **--json** is not set; otherwise **--yes** is required.
 
 **rename** *NAME* *LABEL*
 : Change an account's display label.

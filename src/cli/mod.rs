@@ -52,6 +52,9 @@ pub enum Command {
     Remove {
         /// Label, email address, or account UUID prefix.
         name: String,
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
     },
     /// Change an account's display label.
     Rename {

@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use byte::paths::{HostPaths, TestPaths};
 
@@ -6,13 +6,43 @@ use byte::paths::{HostPaths, TestPaths};
 ///
 /// `CLAUDE_CONFIG_DIR` places `.claude.json` and `.credentials.json` directly
 /// in the given directory — a flatter layout than a real home directory.
+/// stdin is explicitly `null` (never a terminal) so every test here is
+/// deterministic regardless of how the test harness's own stdin happens to
+/// be connected -- this matters in particular for the `remove` confirmation
+/// tests below, which assert on non-interactive behavior specifically.
 fn byte(tp: &TestPaths, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_byte"))
         .args(args)
         .env("CLAUDE_CONFIG_DIR", tp.root())
         .env("BYTE_CONFIG_DIR", tp.byte_config_dir())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to run byte")
+}
+
+/// Seed `accounts.json` directly, bypassing `capture`/`add` entirely, so a
+/// test can exercise `byte remove` against a resolvable account without
+/// ever touching the OS keychain -- `KeyringStore` is real for the compiled
+/// binary, and tests must never write to it.
+fn seed_one_account(tp: &TestPaths) {
+    std::fs::write(
+        tp.accounts_file(),
+        serde_json::json!({
+            "schema": 1,
+            "active": null,
+            "accounts": [{
+                "uuid": "u1",
+                "label": "work",
+                "email": "w@example.com",
+                "organization_name": null,
+                "subscription_type": null,
+                "added_at": "2026-01-01T00:00:00Z",
+                "last_used_at": null
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -168,5 +198,73 @@ fn an_absurd_timeout_is_rejected_before_anything_else_runs() {
     assert!(
         !stderr.contains("panicked"),
         "an absurd --timeout must be a clean usage error, not a panic:\n{stderr}"
+    );
+}
+
+// The tests below cover finding I6 (`byte remove` needing confirmation).
+// They seed accounts.json directly rather than going through `capture`/
+// `add`, and stop at the confirmation gate rather than passing `--yes` --
+// both deliberately, so none of them ever reach manage::remove and its
+// secrets().delete() call, which for this compiled binary is a REAL OS
+// keychain. `--yes` actually proceeding to a full removal is exactly the
+// kind of thing this suite must not exercise end to end (same boundary as
+// cmd_add's success path, noted in tests/cli_run_test.rs).
+
+#[test]
+fn remove_without_yes_requires_confirmation_on_non_interactive_stdin() {
+    let tp = TestPaths::new().unwrap();
+    seed_one_account(&tp);
+
+    let out = byte(&tp, &["remove", "work"]);
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--yes"),
+        "expected a hint to pass --yes on non-interactive stdin, got:\n{stderr}"
+    );
+    // The account must still be listed -- proves manage::remove (and so
+    // secrets().delete()) never ran.
+    let list_out = byte(&tp, &["list", "--json"]);
+    let listed: serde_json::Value = serde_json::from_slice(&list_out.stdout).unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn remove_json_without_yes_requires_confirmation_and_emits_no_stdout() {
+    // --json must never prompt (it would corrupt machine-readable stdout)
+    // -- it requires --yes outright, same as non-interactive stdin.
+    let tp = TestPaths::new().unwrap();
+    seed_one_account(&tp);
+
+    let out = byte(&tp, &["remove", "work", "--json"]);
+
+    assert!(!out.status.success());
+    assert!(
+        out.stdout.is_empty(),
+        "a rejected --json remove must not write partial output to stdout: {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn remove_of_an_unknown_account_reports_no_such_account_not_a_confirmation_prompt() {
+    // Resolving the name happens before the confirmation gate, so a typo'd
+    // name is reported accurately instead of asking the user to confirm
+    // removing something that was never going to be removed.
+    let tp = TestPaths::new().unwrap();
+    seed_one_account(&tp);
+
+    let out = byte(&tp, &["remove", "nobody"]);
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("nobody"),
+        "expected the unresolved name in stderr, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("--yes"),
+        "an unknown account should not prompt for confirmation:\n{stderr}"
     );
 }

@@ -20,15 +20,17 @@ what's quoted here.
 | `write verification failed for <path>, and restoring the pre-write backup afterwards also failed` | The rare double failure: a write didn't verify, and byte's own attempt to restore the pre-write backup over it *also* failed. The file may now hold neither the old nor the new content. | Follow "Recovering from a backup" below for the named file, then confirm with `claude` and `byte current` that it looks right. |
 | applying the account snapshot failed, and rolling back `<path>` afterwards also failed | The rarest failure: writing the credentials file or the config-file half of a switch failed, and restoring the credentials file to its pre-switch state *also* failed. The two files may now disagree about which account is active. | Follow "Recovering from a backup" below for both `.claude.json` and `.credentials.json`, then confirm with `claude` and `byte current` that they agree. |
 | `timed out after N seconds waiting for a new login` (`byte add`) | Nobody logged in as a different account within the timeout. | Retry `byte add`, optionally with a longer `--timeout`, and log in via `claude` promptly. |
+| `byte remove needs confirmation; re-run with --yes to proceed without prompting` | `byte remove` deletes a keychain entry with no backup, so it refuses to run unattended: standard input isn't a terminal (a script, cron, or CI), or `--json` is set (a prompt would corrupt machine-readable output). | Re-run with `--yes` if you're sure, or run it interactively without `--json` to be prompted instead. |
 
 A few behaviors worth calling out even though they aren't errors:
 
 - **Switching to the already-active account** is a no-op — byte still syncs
   the live credentials back to the store first (in case Claude Code rotated
   the token), then reports that the account was already active.
-- **Removing the active account** is allowed. `byte` stops tracking it as
-  active, but Claude Code itself is left logged in as that account's
-  credentials until you run `byte switch` to something else.
+- **Removing the active account** is allowed, once confirmed (see
+  `byte remove` above). `byte` stops tracking it as active, but Claude Code
+  itself is left logged in as that account's credentials until you run
+  `byte switch` to something else.
 - **Sessions already running.** Claude Code only reads its credentials at
   startup. After every switch, byte prints a reminder that already-running
   `claude` sessions keep using the previous account until restarted — it

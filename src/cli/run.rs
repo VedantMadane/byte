@@ -1,5 +1,7 @@
 //! Executing CLI commands and rendering their results.
 
+use std::io::IsTerminal as _;
+
 use crate::cli::{Cli, Command};
 use crate::error::{Error, Result};
 use crate::ops::add::AddSession;
@@ -22,7 +24,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Some(Command::Switch { name }) => cmd_switch(&switcher, &name, cli.json),
         Some(Command::Capture) => cmd_capture(&switcher, cli.json),
         Some(Command::Add { timeout }) => cmd_add(&switcher, timeout, cli.json),
-        Some(Command::Remove { name }) => cmd_remove(&switcher, &name, cli.json),
+        Some(Command::Remove { name, yes }) => cmd_remove(&switcher, &name, yes, cli.json),
         Some(Command::Rename { name, label }) => cmd_rename(&switcher, &name, &label, cli.json),
     }
 }
@@ -206,11 +208,41 @@ pub fn resolve_add_failure(cause: Error, restore_result: Result<()>) -> Result<(
     }
 }
 
+/// `byte remove` is unlike every other write byte performs: the OS keychain
+/// entry it deletes has no backup, so a removal is genuinely unrecoverable
+/// except by re-authenticating with `byte add`. It must not proceed without
+/// explicit confirmation.
 fn cmd_remove<P: HostPaths + Copy, S: SecretStore>(
     sw: &Switcher<P, S>,
     name: &str,
+    yes: bool,
     json: bool,
 ) -> Result<()> {
+    if !yes {
+        // Resolve first, so an unknown name still reports NoSuchAccount
+        // rather than demanding confirmation for an account that was never
+        // going to be removed anyway.
+        let label = sw.load_accounts()?.resolve(name)?.label.clone();
+
+        // --json is for scripts: a prompt would corrupt machine-readable
+        // stdout, and would block forever on stdin nobody is watching, so
+        // it requires --yes outright instead of prompting. The same applies
+        // to any other non-interactive stdin (piped input, cron, CI) even
+        // without --json -- prompting there would just hang.
+        if json || !std::io::stdin().is_terminal() {
+            return Err(Error::ConfirmationRequired {
+                action: "byte remove".into(),
+            });
+        }
+
+        if !output::confirm(&format!(
+            "Remove '{label}'? Its stored credentials cannot be recovered afterward."
+        )) {
+            output::info("Aborted; nothing was removed.");
+            return Ok(());
+        }
+    }
+
     let meta = manage::remove(sw, name)?;
     if json {
         output::data(&serde_json::json!({"removed": meta.label}).to_string());
