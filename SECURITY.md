@@ -75,11 +75,22 @@ Anthropic's auth servers can do that.
 profile: email, organization name, billing type, organization role,
 subscription tier, the associated Claude Code `userID`, and the
 added/last-used timestamps — in effect, the non-secret `oauthAccount` object
-Claude Code stores per account. It never contains a token — the credential
-store and the `backups/` directory do — so reading `accounts.json` alone
-(e.g. its contents ending up in a support bundle or backup) does not expose
-account credentials. That distinction matters more now than when
-`accounts.json` held only a handful of display fields, precisely because its
-inventory has grown to the full profile; the boundary that keeps it
-secret-free has not moved, but there is more non-secret data on the wrong
-side of a misreading of it than there used to be.
+Claude Code stores per account, which byte copies in verbatim and opaque: it
+does not parse, type, or filter that object's fields, the same way it does
+not parse `claudeAiOauth` (see [Architecture](docs/architecture.md)). So the
+claim below is conditional, not something byte enforces by inspecting
+content: **byte itself never *writes* a credential into `accounts.json`**,
+because `accessToken`/`refreshToken` live only in `claudeAiOauth` and byte's
+own code never copies that object's fields into `oauthAccount`'s. It is not
+a claim that byte would notice or filter one out if Anthropic ever put a
+credential-shaped value inside `oauthAccount` itself — byte has no way to
+tell a credential apart from any other string in an object it treats as
+opaque. As things stand today, `oauthAccount` is profile and identity data,
+`accounts.json` never contains a token, and the credential store and the
+`backups/` directory do — so reading `accounts.json` alone (e.g. its
+contents ending up in a support bundle or backup) does not expose account
+credentials. That distinction matters more now than when `accounts.json`
+held only a handful of display fields, precisely because its inventory has
+grown to the full profile; the boundary that keeps it secret-free has not
+moved, but there is more non-secret data on the wrong side of a misreading
+of it than there used to be.
