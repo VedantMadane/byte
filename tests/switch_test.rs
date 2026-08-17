@@ -51,6 +51,12 @@ fn capture_current_stores_the_live_account() {
     let file = AccountsFile::load(&tp.accounts_file()).unwrap();
     assert_eq!(file.accounts.len(), 1);
     assert_eq!(file.active.as_deref(), Some("u1"));
+    // The method's whole point is landing the secret in the store, not just
+    // the metadata.
+    assert_eq!(
+        sw.secrets().get("u1").unwrap().unwrap().oauth["refreshToken"],
+        json!("r1")
+    );
 }
 
 #[test]
@@ -94,6 +100,73 @@ fn sync_back_reports_logged_out_when_no_account_is_present() {
     let sw = Switcher::new(&tp, MemoryStore::new());
 
     assert!(matches!(sw.sync_back().unwrap(), SyncOutcome::LoggedOut));
+}
+
+#[test]
+fn sync_back_still_reports_logged_out_for_a_genuinely_token_less_snapshot() {
+    // Identity IS present here (unlike the unidentifiable-live-account
+    // tests below) so this isolates the refresh-token condition: a snapshot
+    // with an identity but no refresh token is genuinely nothing to lose,
+    // and must still degrade to LoggedOut rather than error.
+    let tp = TestPaths::new().unwrap();
+    std::fs::write(
+        tp.claude_credentials(),
+        serde_json::to_string(&json!({
+            "claudeAiOauth": {"accessToken": "a", "refreshToken": "", "expiresAt": 1i64}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        tp.claude_config(),
+        serde_json::to_string(&json!({
+            "oauthAccount": {"accountUuid": "u1", "emailAddress": "a@example.com"}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let sw = Switcher::new(&tp, MemoryStore::new());
+
+    assert!(matches!(sw.sync_back().unwrap(), SyncOutcome::LoggedOut));
+}
+
+#[test]
+fn sync_back_aborts_rather_than_losing_an_unidentifiable_live_account() {
+    // The Finding-1 scenario at the sync_back layer directly: real,
+    // non-empty credentials in .credentials.json, but .claude.json is valid
+    // JSON with no oauthAccount at all — e.g. a partially-completed login.
+    // capture() still returns Some, but the resulting snapshot has no
+    // identity to key it by, so it must NOT be silently reported as
+    // LoggedOut.
+    let tp = TestPaths::new().unwrap();
+    std::fs::write(
+        tp.claude_credentials(),
+        serde_json::to_string(&json!({
+            "claudeAiOauth": {
+                "accessToken": "a", "refreshToken": "irreplaceable", "expiresAt": 1i64
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        tp.claude_config(),
+        serde_json::to_string(&json!({"numStartups": 1})).unwrap(),
+    )
+    .unwrap();
+    let sw = Switcher::new(&tp, MemoryStore::new());
+
+    let err = sw.sync_back().unwrap_err();
+
+    assert!(matches!(err, byte::Error::UnidentifiableLiveAccount { .. }));
+    // Nothing was captured under any key — the account was, by definition,
+    // unnameable.
+    assert!(
+        AccountsFile::load(&tp.accounts_file())
+            .unwrap()
+            .accounts
+            .is_empty()
+    );
 }
 
 #[test]
@@ -144,10 +217,24 @@ fn switching_back_and_forth_round_trips_cleanly() {
 
     sw.switch_to("a@example.com").unwrap();
     assert_eq!(live_refresh(&tp), "r1");
+    assert_eq!(
+        ClaudeFiles::new(&tp).capture().unwrap().unwrap().email(),
+        Some("a@example.com")
+    );
+
     sw.switch_to("b@example.com").unwrap();
     assert_eq!(live_refresh(&tp), "r2");
+    assert_eq!(
+        ClaudeFiles::new(&tp).capture().unwrap().unwrap().email(),
+        Some("b@example.com")
+    );
+
     sw.switch_to("a@example.com").unwrap();
     assert_eq!(live_refresh(&tp), "r1");
+    assert_eq!(
+        ClaudeFiles::new(&tp).capture().unwrap().unwrap().email(),
+        Some("a@example.com")
+    );
 }
 
 #[test]
@@ -176,10 +263,22 @@ fn switching_to_the_active_account_is_a_no_op_that_still_syncs() {
     let sw = Switcher::new(&tp, MemoryStore::new());
     sw.capture_current().unwrap();
 
+    // Rotate the live token without capturing, so only sync_back — run as
+    // part of this "no-op" switch — can be the thing that carries it into
+    // the store. An implementation that read the stored secret before
+    // calling sync_back would apply the stale value and leave both the live
+    // file and the store holding "r1", so this would not catch that
+    // ordering bug without the rotation.
+    login_as(&tp, "u1", "a@example.com", "r1-rotated");
+
     let out = sw.switch_to("a@example.com").unwrap();
 
     assert!(out.already_active);
-    assert_eq!(live_refresh(&tp), "r1");
+    assert_eq!(live_refresh(&tp), "r1-rotated");
+    assert_eq!(
+        sw.secrets().get("u1").unwrap().unwrap().oauth["refreshToken"],
+        json!("r1-rotated")
+    );
 }
 
 #[test]
@@ -189,6 +288,58 @@ fn switching_to_an_unknown_account_fails_without_touching_the_files() {
     let sw = Switcher::new(&tp, MemoryStore::new());
     sw.capture_current().unwrap();
 
-    assert!(sw.switch_to("nobody@example.com").is_err());
-    assert_eq!(live_refresh(&tp), "r1");
+    // Rotate the live token without capturing. If switch_to called
+    // sync_back before resolving the (unknown) target, the store would pick
+    // up this rotated value even though the switch itself must fail — so
+    // this pins the resolve-before-mutate ordering, not just "some error
+    // occurred".
+    login_as(&tp, "u1", "a@example.com", "r1-rotated");
+
+    let err = sw.switch_to("nobody@example.com").unwrap_err();
+
+    assert!(matches!(err, byte::Error::NoSuchAccount(_)));
+    assert_eq!(live_refresh(&tp), "r1-rotated");
+    assert_eq!(
+        sw.secrets().get("u1").unwrap().unwrap().oauth["refreshToken"],
+        json!("r1")
+    );
+}
+
+#[test]
+fn switch_to_aborts_rather_than_losing_an_unidentifiable_live_account() {
+    // The full end-to-end consequence Finding 1 described: u1 is a known
+    // account with real stored secrets; something else goes live that byte
+    // cannot identify. switch_to must refuse rather than silently "succeed"
+    // by overwriting the unidentifiable live credentials with u1's.
+    let tp = TestPaths::new().unwrap();
+    login_as(&tp, "u1", "a@example.com", "r1");
+    let sw = Switcher::new(&tp, MemoryStore::new());
+    sw.capture_current().unwrap();
+    login_as(&tp, "u2", "b@example.com", "r2");
+    sw.capture_current().unwrap();
+
+    // Something else is now live: real credentials, but .claude.json has no
+    // oauthAccount at all (otherwise valid JSON).
+    std::fs::write(
+        tp.claude_credentials(),
+        serde_json::to_string(&json!({
+            "claudeAiOauth": {
+                "accessToken": "a", "refreshToken": "irreplaceable", "expiresAt": 1i64
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        tp.claude_config(),
+        serde_json::to_string(&json!({"numStartups": 1})).unwrap(),
+    )
+    .unwrap();
+
+    let err = sw.switch_to("a@example.com").unwrap_err();
+
+    assert!(matches!(err, byte::Error::UnidentifiableLiveAccount { .. }));
+    // The unidentifiable live credentials must survive untouched — apply()
+    // must never have run.
+    assert_eq!(live_refresh(&tp), "irreplaceable");
 }

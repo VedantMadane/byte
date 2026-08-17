@@ -31,6 +31,14 @@ pub enum Error {
     #[error("no Claude account is currently logged in")]
     NotLoggedIn,
 
+    #[error(
+        "the live Claude Code login has credentials but {config_path} has no identifiable \
+         account (missing accountUuid and emailAddress); byte refused to switch rather than \
+         risk losing it. Nothing was changed, and your current login is untouched. Relaunch \
+         Claude Code and try again."
+    )]
+    UnidentifiableLiveAccount { config_path: PathBuf },
+
     #[error("unsupported snapshot schema version {found}; this build expects {expected}")]
     SchemaMismatch { found: u32, expected: u32 },
 

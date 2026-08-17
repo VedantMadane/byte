@@ -1,5 +1,7 @@
 //! Capturing, syncing back, and switching accounts (spec §7).
 
+use serde_json::Value;
+
 use crate::claude::files::ClaudeFiles;
 use crate::error::{Error, Result};
 use crate::paths::HostPaths;
@@ -56,12 +58,11 @@ impl<P: HostPaths + Copy, S: SecretStore> Switcher<P, S> {
         let snapshot = self.files().capture()?.ok_or(Error::NotLoggedIn)?;
         snapshot.validate()?;
 
+        // validate() already returned Err above if identity() were None, so
+        // this is guaranteed to be Some.
         let uuid = snapshot
             .identity()
-            .ok_or_else(|| Error::InvalidSnapshot {
-                account: snapshot.default_label(),
-                reason: "no account UUID or email address".into(),
-            })?
+            .expect("validate() guarantees an identity")
             .to_string();
 
         let mut accounts = self.load_accounts()?;
@@ -75,17 +76,44 @@ impl<P: HostPaths + Copy, S: SecretStore> Switcher<P, S> {
 
     /// Copy the live credentials into the store, so a token Claude Code
     /// rotated behind byte's back is not lost.
+    ///
+    /// A live snapshot with no refresh token at all is genuinely logged
+    /// out, which is reported as [`SyncOutcome::LoggedOut`] rather than an
+    /// error. But a live snapshot that DOES carry a refresh token and still
+    /// fails validation — in practice, `.claude.json` has no
+    /// `oauthAccount`, so there is no identity to key it by — is not
+    /// logged out: there are real credentials on disk this call cannot
+    /// safely discard by mislabelling them "logged out". That case is a
+    /// hard error instead, specifically so `switch_to`'s `?` aborts before
+    /// reaching `apply()`, which would otherwise overwrite those
+    /// credentials having never captured them anywhere (spec §7.1).
     pub fn sync_back(&self) -> Result<SyncOutcome> {
         let Some(snapshot) = self.files().capture()? else {
             return Ok(SyncOutcome::LoggedOut);
         };
+
         if snapshot.validate().is_err() {
-            return Ok(SyncOutcome::LoggedOut);
+            let has_refresh_token = snapshot
+                .oauth
+                .get("refreshToken")
+                .and_then(Value::as_str)
+                .is_some_and(|token| !token.is_empty());
+
+            return if has_refresh_token {
+                Err(Error::UnidentifiableLiveAccount {
+                    config_path: self.paths.claude_config(),
+                })
+            } else {
+                Ok(SyncOutcome::LoggedOut)
+            };
         }
 
-        let Some(uuid) = snapshot.identity().map(str::to_string) else {
-            return Ok(SyncOutcome::LoggedOut);
-        };
+        // validate() already returned Err above if identity() were None, so
+        // this is guaranteed to be Some.
+        let uuid = snapshot
+            .identity()
+            .expect("validate() guarantees an identity")
+            .to_string();
 
         let mut accounts = self.load_accounts()?;
         let known = accounts.accounts.iter().any(|a| a.uuid == uuid);
@@ -130,10 +158,18 @@ impl<P: HostPaths + Copy, S: SecretStore> Switcher<P, S> {
         accounts.set_active(&target_uuid);
         self.save_accounts(&accounts)?;
 
+        // An exact uuid lookup, not `resolve()`: after the switch has
+        // committed, a second fuzzy lookup could in principle match more
+        // than one account (e.g. one account's uuid-as-identity fallback
+        // colliding with another account's email) and report
+        // `AmbiguousAccount` here — masking a switch that already succeeded
+        // behind the wrong error.
         let switched_to = accounts
-            .resolve(&target_uuid)
+            .accounts
+            .iter()
+            .find(|a| a.uuid == target_uuid)
             .cloned()
-            .map_err(|_| Error::NoSuchAccount(target_uuid.clone()))?;
+            .ok_or_else(|| Error::NoSuchAccount(target_uuid.clone()))?;
 
         Ok(SwitchOutcome {
             switched_to,
