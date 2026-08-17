@@ -98,7 +98,7 @@ fn apply_with_no_user_id_removes_the_key_instead_of_writing_null() {
     let files = ClaudeFiles::new(&tp);
 
     let target = AccountSnapshot::new(
-        json!({"accessToken": "access-2", "refreshToken": "refresh-2"}),
+        json!({"accessToken": "access-2", "refreshToken": "refresh-2", "expiresAt": 99i64}),
         json!({"accountUuid": "uuid-2", "emailAddress": "b@example.com"}),
         None,
     );
@@ -159,7 +159,7 @@ fn apply_rolls_back_credentials_when_the_config_write_fails() {
     let paths = UnwritableConfigPaths { inner: &tp };
 
     let target = AccountSnapshot::new(
-        json!({"accessToken": "access-2", "refreshToken": "refresh-2"}),
+        json!({"accessToken": "access-2", "refreshToken": "refresh-2", "expiresAt": 99i64}),
         json!({"accountUuid": "uuid-2"}),
         Some("user-2".to_string()),
     );
@@ -354,6 +354,38 @@ fn validate_rejects_a_snapshot_with_no_refresh_token() {
 }
 
 #[test]
+fn validate_rejects_a_snapshot_with_no_expires_at() {
+    // Finding M1: spec §7 step 4 requires "refreshToken non-empty, expiresAt
+    // parses, schema version known" -- the expiresAt check was silently
+    // dropped when the identity check was added. A snapshot missing it must
+    // be refused, the same as a missing refresh token.
+    let snap = AccountSnapshot::new(
+        json!({"refreshToken": "r"}),
+        json!({"accountUuid": "u"}),
+        None,
+    );
+    assert!(matches!(
+        snap.validate(),
+        Err(byte::Error::InvalidSnapshot { .. })
+    ));
+}
+
+#[test]
+fn validate_rejects_a_non_numeric_expires_at() {
+    // "expiresAt parses" -- a present-but-wrong-typed value must be
+    // rejected too, not just an absent key.
+    let snap = AccountSnapshot::new(
+        json!({"refreshToken": "r", "expiresAt": "not-a-number"}),
+        json!({"accountUuid": "u"}),
+        None,
+    );
+    assert!(matches!(
+        snap.validate(),
+        Err(byte::Error::InvalidSnapshot { .. })
+    ));
+}
+
+#[test]
 fn validate_rejects_an_unknown_schema_version() {
     let mut snap = AccountSnapshot::new(
         json!({"refreshToken": "r"}),
@@ -367,7 +399,7 @@ fn validate_rejects_an_unknown_schema_version() {
 #[test]
 fn validate_accepts_a_well_formed_snapshot() {
     let snap = AccountSnapshot::new(
-        json!({"refreshToken": "r"}),
+        json!({"refreshToken": "r", "expiresAt": 1i64}),
         json!({"accountUuid": "u"}),
         None,
     );

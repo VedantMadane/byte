@@ -96,6 +96,24 @@ impl AccountSnapshot {
             });
         }
 
+        // Spec §7 step 4: "refreshToken non-empty, expiresAt parses, schema
+        // version known". expiresAt is a Unix-epoch-milliseconds integer in
+        // every snapshot Claude Code itself produces; as_i64() is the parse
+        // check, rejecting both an absent key and a non-numeric value.
+        if self
+            .oauth
+            .get("expiresAt")
+            .and_then(Value::as_i64)
+            .is_none()
+        {
+            return Err(Error::InvalidSnapshot {
+                account: who,
+                reason: "expiresAt is missing or not a number; re-authenticate this account \
+                         with `byte add`"
+                    .into(),
+            });
+        }
+
         if self.identity().is_none() {
             return Err(Error::InvalidSnapshot {
                 account: who,
