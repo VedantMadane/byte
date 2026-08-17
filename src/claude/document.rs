@@ -138,7 +138,11 @@ impl JsonDocument {
         match std::fs::read(path) {
             Ok(written) if written == bytes => {
                 if let Some(name) = path.file_name() {
-                    atomic::prune(backup_dir, &name.to_string_lossy(), 10);
+                    atomic::prune(
+                        backup_dir,
+                        &name.to_string_lossy(),
+                        atomic::BACKUP_RETENTION,
+                    );
                 }
                 Ok(())
             }

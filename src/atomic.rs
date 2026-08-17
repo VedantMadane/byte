@@ -10,6 +10,11 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Result};
 use crate::output;
 
+/// How many timestamped backups of a given file `prune` keeps. Applied
+/// uniformly to `.claude.json` and `.credentials.json` (via
+/// `JsonDocument::save`) and to `accounts.json` (via `AccountsFile::save`).
+pub const BACKUP_RETENTION: usize = 10;
+
 fn io_err(path: &Path) -> impl Fn(std::io::Error) -> Error + '_ {
     move |source| Error::Io {
         path: path.to_path_buf(),
