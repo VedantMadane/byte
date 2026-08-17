@@ -261,6 +261,42 @@ fn capture_then_apply_round_trips_exactly() {
 }
 
 #[test]
+fn apply_refuses_to_create_missing_claude_files_from_scratch() {
+    // Finding I3: apply() previously used load_or_empty() on Claude Code's
+    // OWN files, so a missing `.claude.json`/`.credentials.json` (a stale
+    // or mistyped CLAUDE_CONFIG_DIR, or a machine that has never logged
+    // into Claude Code) made byte silently fabricate both from an empty
+    // document and report a successful switch -- violating spec §9 row 1
+    // ("Clear message naming the expected paths; exit non-zero. No files
+    // created."). Neither file is written here at all -- TestPaths::new()
+    // creates the parent directories but not the files themselves -- so
+    // apply() must fail loudly instead of creating anything.
+    let tp = TestPaths::new().unwrap();
+    let files = ClaudeFiles::new(&tp);
+
+    let target = AccountSnapshot::new(
+        json!({"accessToken": "a", "refreshToken": "refresh-2", "expiresAt": 1i64}),
+        json!({"accountUuid": "uuid-2"}),
+        Some("user-2".to_string()),
+    );
+
+    let err = files.apply(&target).unwrap_err();
+
+    assert!(
+        matches!(err, byte::Error::ClaudeFileMissing(_)),
+        "expected ClaudeFileMissing, got: {err}"
+    );
+    assert!(
+        !tp.claude_credentials().exists(),
+        "apply() must not create .credentials.json when it was absent"
+    );
+    assert!(
+        !tp.claude_config().exists(),
+        "apply() must not create .claude.json when it was absent"
+    );
+}
+
+#[test]
 fn clear_removes_the_account_but_keeps_other_keys() {
     let tp = TestPaths::new().unwrap();
     seed(&tp, "uuid-1", "a@example.com", "refresh-1");
@@ -285,6 +321,26 @@ fn clear_removes_the_account_but_keeps_other_keys() {
     assert!(!cfg.as_object().unwrap().contains_key("userID"));
     assert_eq!(cfg["numStartups"], json!(60));
     assert_eq!(cfg["projects"]["/x"]["history"], json!([1]));
+}
+
+#[test]
+fn clear_refuses_when_claude_files_are_missing() {
+    // The clear()-side counterpart of
+    // apply_refuses_to_create_missing_claude_files_from_scratch: the add
+    // flow's begin() calls clear() unconditionally, so this must refuse
+    // just as loudly rather than fabricating a "logged out" state out of
+    // files that were never there.
+    let tp = TestPaths::new().unwrap();
+    let files = ClaudeFiles::new(&tp);
+
+    let err = files.clear().unwrap_err();
+
+    assert!(
+        matches!(err, byte::Error::ClaudeFileMissing(_)),
+        "expected ClaudeFileMissing, got: {err}"
+    );
+    assert!(!tp.claude_credentials().exists());
+    assert!(!tp.claude_config().exists());
 }
 
 #[test]

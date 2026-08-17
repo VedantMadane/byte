@@ -47,6 +47,15 @@ impl<P: HostPaths> ClaudeFiles<P> {
 
     /// Make `snapshot` the logged-in account, leaving all other keys alone.
     ///
+    /// Both files must already exist -- this uses `load()`, not
+    /// `load_or_empty()`, because this path only ever runs on a machine that
+    /// has already logged into Claude Code at least once (spec §9 row 1: a
+    /// missing file gets a clear error and exit non-zero, never a file byte
+    /// fabricates). Treating an absent file as an empty document here would
+    /// let byte silently create `.claude.json`/`.credentials.json` from
+    /// nothing -- e.g. for a stale or mistyped `CLAUDE_CONFIG_DIR` -- and
+    /// report a successful switch into a directory Claude Code never reads.
+    ///
     /// The credentials file is written first. If anything past that point
     /// fails -- the credentials write itself (e.g. a housekeeping-adjacent
     /// I/O error), or the config-file half (it cannot be loaded, or it
@@ -64,7 +73,7 @@ impl<P: HostPaths> ClaudeFiles<P> {
         let backups = self.paths.backup_dir();
 
         let creds_path = self.paths.claude_credentials();
-        let mut creds = JsonDocument::load_or_empty(&creds_path)?;
+        let mut creds = JsonDocument::load(&creds_path)?;
         let original_creds = creds.clone();
         creds.set(OAUTH_KEY, snapshot.oauth.clone());
 
@@ -93,7 +102,7 @@ impl<P: HostPaths> ClaudeFiles<P> {
     /// caught and turned into a credentials rollback.
     fn apply_config(&self, snapshot: &AccountSnapshot, backups: &Path) -> Result<()> {
         let cfg_path = self.paths.claude_config();
-        let mut cfg = JsonDocument::load_or_empty(&cfg_path)?;
+        let mut cfg = JsonDocument::load(&cfg_path)?;
         cfg.set(ACCOUNT_KEY, snapshot.account.clone());
         match &snapshot.user_id {
             Some(id) => cfg.set(USER_ID_KEY, Value::String(id.clone())),
@@ -103,16 +112,20 @@ impl<P: HostPaths> ClaudeFiles<P> {
     }
 
     /// Put Claude Code into a logged-out state, used by the add flow.
+    ///
+    /// Uses `load()`, not `load_or_empty()` -- see `apply()`'s doc comment
+    /// for why: this only ever runs on a machine that has already logged
+    /// into Claude Code, so both files are expected to exist already.
     pub fn clear(&self) -> Result<()> {
         let backups = self.paths.backup_dir();
 
         let creds_path = self.paths.claude_credentials();
-        let mut creds = JsonDocument::load_or_empty(&creds_path)?;
+        let mut creds = JsonDocument::load(&creds_path)?;
         creds.remove(OAUTH_KEY);
         creds.save(&creds_path, &backups)?;
 
         let cfg_path = self.paths.claude_config();
-        let mut cfg = JsonDocument::load_or_empty(&cfg_path)?;
+        let mut cfg = JsonDocument::load(&cfg_path)?;
         cfg.remove(ACCOUNT_KEY);
         cfg.remove(USER_ID_KEY);
         cfg.save(&cfg_path, &backups)?;
