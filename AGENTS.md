@@ -36,7 +36,25 @@ make fmt-check     # verify formatting (CI)
 
 ## Architecture summary
 
-_Describe the module layout and dependency direction in 1–3 paragraphs._
+byte moves a small `AccountSnapshot` (one account's OAuth credentials plus
+its identity) between Claude Code's live config files and a per-account
+store, touching only the specific keys it owns and leaving everything else
+in those files byte-for-byte untouched.
+
+Four layers, each depending only on the ones below it: `cli/` (argument
+parsing, `--json`, rendering — no file I/O or business logic of its own) →
+`ops/` (switch, add, manage — the operations, generic over the `HostPaths`
+and `SecretStore` traits rather than their concrete implementations) →
+`claude/` (reads and patches Claude Code's two files) and `store/` (account
+metadata and secrets) → `error.rs` / `output.rs` / `paths.rs` / `atomic.rs`
+(primitives used from every layer above). Nothing in a lower layer imports
+from a higher one; production code instantiates
+`Switcher<&RealPaths, KeyringStore>`, tests instantiate
+`Switcher<&TestPaths, MemoryStore>` — the same generic types, no keychain or
+real Claude Code installation required.
+
+See [`docs/architecture.md`](docs/architecture.md) for the full module map,
+major data types, and an end-to-end command trace.
 
 ## Where new code goes
 
@@ -53,6 +71,15 @@ _Describe the module layout and dependency direction in 1–3 paragraphs._
 - **All tests live in separate files** — never inline in source files (no `#[cfg(test)]` blocks, no `if __name__ == "__main__"` test harnesses). This keeps source files free of test scaffolding and lets agents, hooks, and linters treat source and test code differently.
 - Test files are named with a `_test` or `_tests` suffix (e.g. `check_test.rs`, `utils_test.py`). The stem must match the pattern `_?[Tt]ests?$` per §20 of `OSS_SPEC.md`.
 - Tests live in `tests/`. Use `tempfile` or equivalent for any test that writes to the filesystem.
+- **Assert identity, not cardinality.** `assert_eq!(remaining.len(), 3)`
+  passes whichever three items happen to survive — including the three a
+  reversed sort would keep. When a test is about *which* items survive (or
+  which one changed), assert that directly, not just how many there are.
+- **Pin the error variant, not `.is_err()`.** `assert!(result.is_err())`
+  passes for any failure, including the wrong one for the wrong reason. Use
+  `assert!(matches!(err, Error::TheSpecificVariant { .. }))` so the test
+  fails if the code starts erroring for a different cause than the one it's
+  named for.
 
 ## Source file size
 
@@ -69,7 +96,26 @@ config keys| `docs/configuration.md`
 
 ## Parity / cross-cutting rules
 
-_Any rule that spans multiple files (e.g. keeping bindings in sync)._
+- Every write to a Claude Code file goes through `atomic.rs` (temp file in
+  the same directory, fsync, atomic rename), preceded by a timestamped
+  backup and followed by a read-back verification, regardless of which op
+  triggers it. Housekeeping (backup pruning) must never turn an
+  already-verified, already-committed write into an `Err` — a safety
+  mechanism guarding one commit point while another can fail after
+  committing has recurred three times in this codebase (see
+  `atomic::prune`'s doc comment for the most recent instance).
+- `JsonDocument` never deserializes a Claude Code file into a typed struct —
+  every field byte does not explicitly model must survive a capture/apply
+  cycle untouched.
+- All user-facing text goes through `output.rs`'s helpers (`status`, `warn`,
+  `info`, `header`, `error`, `confirm` on stderr; `data` on stdout). No other
+  module calls `println!`/`eprintln!` directly — this is what keeps `--json`
+  output pipeable.
+- A single `Error` enum (`error.rs`) covers every fallible path in the
+  crate. When you add a variant that can reach a user, add its row to
+  [`docs/troubleshooting.md`](docs/troubleshooting.md) in the same change —
+  that table claims to list every error byte can report, and has drifted
+  from that claim more than once.
 
 ## Maintenance skills
 
