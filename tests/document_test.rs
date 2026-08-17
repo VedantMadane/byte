@@ -29,6 +29,31 @@ const PRETTY_FIXTURE: &str = r#"{
   "autoUpdates": false
 }"#;
 
+/// `PRETTY_FIXTURE` with the middle key `oauthAccount` removed — the exact
+/// text `shift_remove` must produce. `swap_remove` would instead move the
+/// last key (`autoUpdates`) into `oauthAccount`'s slot, which is nowhere in
+/// this text.
+const FIXTURE_WITHOUT_OAUTH_ACCOUNT: &str = r#"{
+  "numStartups": 60,
+  "installMethod": "native",
+  "tipsHistory": {
+    "new-user-warmup": 5,
+    "zebra-tip": 1,
+    "alpha-tip": 2
+  },
+  "userID": "old-user-id",
+  "projects": {
+    "/some/path": {
+      "history": [
+        1,
+        2,
+        3
+      ]
+    }
+  },
+  "autoUpdates": false
+}"#;
+
 #[test]
 fn patching_one_key_leaves_every_other_byte_identical() {
     let tp = TestPaths::new().unwrap();
@@ -166,6 +191,43 @@ fn saving_creates_a_backup_first() {
     assert_eq!(backups.len(), 1);
     let saved = std::fs::read_to_string(backups[0].path()).unwrap();
     assert_eq!(saved, PRETTY_FIXTURE);
+}
+
+#[test]
+fn removing_a_middle_key_preserves_order_of_the_rest() {
+    // Regression guard for `remove()`'s use of `shift_remove`. If that ever
+    // regressed to `swap_remove`, the last top-level key (`autoUpdates`)
+    // would jump into the removed key's slot instead of every later key
+    // shifting up by one — this asserts the full byte-for-byte layout, not
+    // just that the key is gone, so a reordering trips it.
+    let tp = TestPaths::new().unwrap();
+    let path = tp.root().join(".claude.json");
+    std::fs::write(&path, PRETTY_FIXTURE).unwrap();
+
+    let mut doc = JsonDocument::load(&path).unwrap();
+    doc.remove("oauthAccount");
+    doc.save(&path, &tp.backup_dir()).unwrap();
+
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(after, FIXTURE_WITHOUT_OAUTH_ACCOUNT);
+}
+
+#[test]
+fn float_roundtrip_feature_prevents_precision_drift() {
+    // Regression guard for the `float_roundtrip` feature on `serde_json` in
+    // Cargo.toml. This literal is copied verbatim from a real ~/.claude.json
+    // (key `frame_duration_ms_min`): without the feature, serde_json's
+    // default float parser is not correctly-rounded and this value
+    // reserialises as "0.091100000005099" — one ULP off and one byte
+    // shorter. If this test ever fails, the feature was dropped.
+    let tp = TestPaths::new().unwrap();
+    let path = tp.root().join("floats.json");
+    std::fs::write(&path, r#"{"frame_duration_ms_min":0.09110000000509899}"#).unwrap();
+
+    let doc = JsonDocument::load(&path).unwrap();
+    let out = String::from_utf8(doc.to_bytes().unwrap()).unwrap();
+
+    assert_eq!(out, r#"{"frame_duration_ms_min":0.09110000000509899}"#);
 }
 
 #[test]

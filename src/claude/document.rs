@@ -129,8 +129,8 @@ impl JsonDocument {
 
         atomic::write(path, &bytes)?;
 
-        match Self::load(path) {
-            Ok(reread) if reread.value == self.value => {
+        match std::fs::read(path) {
+            Ok(written) if written == bytes => {
                 if let Some(name) = path.file_name() {
                     atomic::prune(backup_dir, &name.to_string_lossy(), 10)?;
                 }
