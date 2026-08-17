@@ -17,17 +17,21 @@ impl AddSession {
     /// Save the current account, verify it is recoverable, then log out.
     ///
     /// The verification step is what makes this safe: byte only clears
-    /// credentials it has already read back out of the store.
+    /// credentials it has already read back out of the store and confirmed
+    /// reassemble into something `abort()` could actually restore -- both
+    /// halves, not just the oauth one. A bare keychain read-back used to be
+    /// sufficient proof on its own, back when the keychain held everything;
+    /// now that a snapshot's secret and non-secret halves live in two
+    /// different stores (see `Switcher::load_snapshot`), proving the oauth
+    /// half round-trips no longer proves the account-identity half does too.
     pub fn begin<P: HostPaths + Copy, S: SecretStore>(sw: &Switcher<P, S>) -> Result<Self> {
         let previous = match sw.capture_current() {
+            // Prove recoverability before destroying the live copy: this is
+            // the exact reassembly `abort()` -> `switch_to` ->
+            // `load_snapshot` will later need, so proving it here means
+            // proving the real recovery path, not a weaker proxy for it.
             Ok(meta) => {
-                // Prove recoverability before destroying the live copy.
-                if sw.secrets().get(&meta.uuid)?.is_none() {
-                    return Err(Error::InvalidSnapshot {
-                        account: meta.label.clone(),
-                        reason: "could not be read back from the store; refusing to log out".into(),
-                    });
-                }
+                sw.load_snapshot(&meta)?;
                 Some(meta)
             }
             Err(Error::NotLoggedIn) => None,

@@ -27,6 +27,31 @@ impl SecretStore for UnreadableStore {
     }
 }
 
+/// A store whose `get` always returns *something* -- just never a valid
+/// oauth block. Distinct from `UnreadableStore` above: that one simulates a
+/// keychain entry that is simply gone (`get` -> `None`), which the
+/// recoverability check in `begin` has always rejected, before and after
+/// the keychain-size fix. This one simulates a keychain entry that reads
+/// back as present but garbled (corruption, a wrong-shape payload, a bug
+/// elsewhere) -- the case the *old* `.is_none()` check would have missed
+/// entirely, since `Some(garbage)` is not `None`. Only `load_snapshot`'s
+/// full reassemble-and-validate (added to `begin` per review) catches it.
+struct GarbledStore;
+
+impl SecretStore for GarbledStore {
+    fn put(&self, _uuid: &str, _oauth: &Value) -> byte::Result<()> {
+        Ok(())
+    }
+
+    fn get(&self, _uuid: &str) -> byte::Result<Option<Value>> {
+        Ok(Some(json!({"not": "a valid oauth block"})))
+    }
+
+    fn delete(&self, _uuid: &str) -> byte::Result<()> {
+        Ok(())
+    }
+}
+
 fn login_as(tp: &TestPaths, uuid: &str, email: &str, refresh: &str) {
     std::fs::write(
         tp.claude_credentials(),
@@ -163,6 +188,29 @@ fn begin_refuses_to_clear_when_the_store_cannot_read_back_what_it_wrote() {
     // An implementation that errored AFTER clearing would still satisfy the
     // assertion above, so this checks the live files directly rather than
     // just the returned error.
+    let live = ClaudeFiles::new(&tp).capture().unwrap().unwrap();
+    assert_eq!(live.email(), Some("a@example.com"));
+}
+
+#[test]
+fn begin_refuses_to_clear_when_the_store_returns_a_garbled_readback() {
+    // The property genuinely new to `begin`'s recoverability check after
+    // the keychain-size fix: this test cannot pass under the *old* check
+    // (`sw.secrets().get(&meta.uuid)?.is_none()`), because GarbledStore's
+    // `get` always returns `Some(..)` -- the old check only ever asked
+    // whether something came back, not whether it was the right something.
+    // Only `load_snapshot`'s validate() call, run against the actual
+    // read-back value, catches a present-but-invalid oauth block. (See
+    // `begin_refuses_to_clear_when_the_store_cannot_read_back_what_it_wrote`
+    // above for the `None` case, which both the old and new checks reject
+    // identically -- that test alone cannot tell the two apart.)
+    let tp = TestPaths::new().unwrap();
+    login_as(&tp, "u1", "a@example.com", "r1");
+    let sw = Switcher::new(&tp, GarbledStore);
+
+    let err = AddSession::begin(&sw).unwrap_err();
+
+    assert!(matches!(err, byte::Error::InvalidSnapshot { .. }));
     let live = ClaudeFiles::new(&tp).capture().unwrap().unwrap();
     assert_eq!(live.email(), Some("a@example.com"));
 }
