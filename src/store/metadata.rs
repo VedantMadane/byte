@@ -110,6 +110,9 @@ impl AccountsFile {
     /// Find an account by label, email, or UUID prefix.
     pub fn resolve(&self, query: &str) -> Result<&AccountMeta> {
         let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return Err(Error::NoSuchAccount(query.to_string()));
+        }
 
         let exact: Vec<&AccountMeta> = self
             .accounts

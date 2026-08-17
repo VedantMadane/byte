@@ -70,6 +70,19 @@ fn resolve_reports_ambiguity_rather_than_guessing() {
 }
 
 #[test]
+fn resolve_rejects_an_empty_query_even_with_exactly_one_account() {
+    let mut file = AccountsFile::default();
+    file.upsert_from(&snap("u1", "a@example.com"));
+
+    // With a single stored account, "" and uuid.starts_with("") are both
+    // true, so an unguarded prefix fallback would resolve a blank query to
+    // that account. Zero or 2+ accounts already error correctly; this is
+    // the one case that previously slipped through.
+    assert!(file.resolve("").is_err());
+    assert!(file.resolve("   ").is_err());
+}
+
+#[test]
 fn remove_deletes_the_account_and_clears_active_when_it_matches() {
     let mut file = AccountsFile::default();
     file.upsert_from(&snap("u1", "a@example.com"));
