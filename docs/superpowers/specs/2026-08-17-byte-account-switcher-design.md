@@ -15,12 +15,17 @@ in and out of the two files Claude Code reads at startup.
 
 ### Non-goals
 
-- Switching the Claude desktop app or browser sessions. Claude Code only.
+- Switching browser sessions on claude.ai.
+- Switching the Claude Desktop app **in v1**. This is feasible but mechanically
+  unrelated to Claude Code switching; it is designed in §14 and deferred to
+  Phase 8.
 - Implementing the OAuth flow. `byte` never talks to Anthropic's auth servers;
   it only moves credentials that Claude Code itself obtained.
 - Isolating settings, project history, plugins, or MCP tokens per account.
   Those stay shared. See §4.
-- Concurrent use of two accounts at once. One account is active at a time.
+- Concurrent use of two accounts at once. Exactly one Claude Code account is
+  active at a time. (§14.2 notes that Phase 8 may make simultaneous *desktop*
+  profiles possible; that does not change this constraint for Claude Code.)
 
 ## 2. Background: where Claude Code keeps account state
 
@@ -339,7 +344,7 @@ inline `#[cfg(test)]` modules.
 
 | Phase | Deliverable |
 |---|---|
-| 0 | Research and reuse: survey prior art, verify `tray-icon` and `keyring` behavior on Windows, confirm refresh-token rotation empirically |
+| 0 | Research and reuse: survey prior art, verify `tray-icon` and `keyring` behavior on Windows, confirm refresh-token rotation empirically, and test whether Claude Desktop honors `--user-data-dir` (§14.2) |
 | 1 | Core: paths, atomic writes, preserving read/patch, snapshot capture/apply |
 | 2 | Store: metadata + keychain, in-memory test implementation |
 | 3 | Ops: add, switch, remove, list, sync-back |
@@ -347,6 +352,7 @@ inline `#[cfg(test)]` modules.
 | 5 | Tray: icon, menu, events, notifications |
 | 6 | Process detection and warnings |
 | 7 | Packaging, release artifacts, README, website |
+| 8 | Claude Desktop switching (§14) — deferred; scoped separately after v1 ships |
 
 Phases 1–4 produce a usable product before any GUI code exists. That is
 deliberate: it keeps the risky, data-touching work under test and away from the
@@ -384,3 +390,67 @@ Per the sync points in `AGENTS.md`:
 - `docs/troubleshooting.md` — the table in §9, plus recovering from a backup
 - `man/byte.md` — the command surface from §3
 - `SECURITY.md` — the threat-model note from risk 5
+
+## 14. Appendix: Claude Desktop switching (deferred to Phase 8)
+
+Recorded so the decision is not rediscovered later. Findings below were verified
+by inspection on Windows on 2026-08-17.
+
+### 14.1 What was found
+
+Claude Desktop is an Electron application. The installed app lives under
+`%LOCALAPPDATA%\AnthropicClaude\app-<version>\` (confirmed Electron by the
+presence of `chrome_100_percent.pak`, `icudtl.dat`, and
+`v8_context_snapshot.bin`), launched through a Squirrel shim at
+`%LOCALAPPDATA%\AnthropicClaude\claude.exe`.
+
+Its session state is a self-contained Chromium userData directory at
+`%APPDATA%\Claude`, containing `Network/Cookies` (SQLite, values encrypted with
+DPAPI via the `Local State` key), `Local Storage`, `IndexedDB`, `Session
+Storage`, several `Partitions`, and a `lockfile` while running.
+
+**The critical consequence: Claude Desktop and Claude Code use entirely separate
+authentication systems.** Claude Code holds OAuth tokens in JSON files; the
+desktop app holds a Chromium web session. Switching one has no effect on the
+other. Any future combined switch must handle both, and must answer what happens
+when the two fall out of sync.
+
+### 14.2 Approach
+
+Two viable mechanisms, one rejected.
+
+**A — Profile directory swap (baseline).** Because `%APPDATA%\Claude` *is* the
+session, store one directory per account and rename on switch. No decryption, no
+parsing, and cookies, local storage, and IndexedDB all travel together.
+Requires the app to be fully closed; Chromium corrupts profile state otherwise.
+Cache subdirectories should be excluded or cleared to limit disk cost.
+
+**B — `--user-data-dir` launch flag (preferred if supported).** Chromium parses
+this switch before application code runs, and Electron's single-instance lock is
+scoped per userData directory, so distinct profiles should be able to run
+**simultaneously**. Unverified: whether the Squirrel shim forwards arguments to
+the real binary. A drawback is that launching from the Start menu bypasses the
+flag and silently uses the default profile.
+
+Phase 0 tests B. If it works, B is the design and A becomes the fallback for
+users who launch from a shortcut; if not, A is the design.
+
+**C — Cookie surgery (rejected).** Decrypting DPAPI to swap the session cookie
+in place is fragile, breaks whenever the cookie schema changes, and would put
+`byte` in the business of decrypting browser credentials. It is not pursued at
+any phase.
+
+### 14.3 Why it is deferred rather than built in v1
+
+1. It shares almost no code with the Claude Code switcher — different storage,
+   different mechanism, different failure modes.
+2. It is destructive by nature. §9 deliberately chose to warn about running
+   Claude Code sessions rather than terminate them; approach A requires closing
+   a GUI application the user may have unsaved work in.
+3. Chromium profile state is substantially more fragile than two JSON keys, and
+   each stored profile carries its own caches and IndexedDB.
+4. It makes "switch account" ambiguous in a way v1's design does not have to
+   resolve: whether a switch means Claude Code, the desktop app, or both, and
+   what the correct behavior is when the two disagree.
+
+Phase 8 must resolve item 4 explicitly before any implementation.
