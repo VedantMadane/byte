@@ -1,9 +1,10 @@
 # Architecture of byte
 
 byte moves a small, self-contained `AccountSnapshot` — one account's OAuth
-credentials plus its identity — between Claude Code's live config files and a
-per-account store. Everything else in those files is opaque to byte and
-passes through untouched.
+credentials plus its identity — between Claude Code's live config files and
+two per-account stores: an OS keychain entry for the secret half, and an
+entry in byte's own `accounts.json` for the rest. Everything else in Claude
+Code's files is opaque to byte and passes through untouched.
 
 ## Module layout
 
@@ -21,7 +22,7 @@ src/
     files.rs       ClaudeFiles — capture/apply/clear a snapshot against the live files
   store/
     metadata.rs    AccountsFile, AccountMeta — accounts.json, name resolution
-    secrets.rs     SecretStore trait, KeyringStore (OS keychain), MemoryStore (tests)
+    secrets.rs     SecretStore trait (oauth block only), KeyringStore (OS keychain), MemoryStore (tests)
   ops/
     switch.rs      Switcher — capture, sync-back, switch (the core algorithm)
     add.rs         AddSession — logout-and-watch add flow
@@ -72,20 +73,30 @@ error, output, paths, atomic
 - **`AccountSnapshot`** (`claude/snapshot.rs`) — the unit of account identity
   byte moves around: the `claudeAiOauth` object, the `oauthAccount` object,
   and `userID`, held as opaque `serde_json::Value` so unknown upstream fields
-  survive a capture/apply cycle untouched. Short-lived — constructed by a
-  capture, consumed by an apply or a store write.
+  survive a capture/apply cycle untouched. Short-lived and never persisted
+  as a whole: `capture()` builds one from the live files, and it is
+  immediately split into its two stored halves (below). `Switcher` puts one
+  back together with `AccountSnapshot::reassemble` whenever an op needs a
+  complete snapshot to hand to `ClaudeFiles::apply`.
 - **`JsonDocument`** (`claude/document.rs`) — a parsed JSON object plus the
   formatting details (pretty vs. compact, trailing newline) needed to write
   it back without producing a spurious diff.
 - **`AccountsFile` / `AccountMeta`** (`store/metadata.rs`) — the persisted,
-  non-secret half of an account: label, email, organization, UUID, and which
-  account is currently active. This is what `accounts.json` serializes to
-  and what `byte list` reads; it never touches the keychain.
+  non-secret half of an account: display fields (label, email, organization,
+  subscription tier) plus the raw `oauthAccount` object, `userID`, and the
+  captured schema version that reassembly needs to rebuild a complete
+  snapshot. This is what `accounts.json` serializes to and what `byte list`
+  reads; it never touches the keychain, and never carries the secret `oauth`
+  block (`accessToken`/`refreshToken`) — that split is what keeps a single
+  account's keychain entry under the OS credential store's size limit (see
+  `store/secrets.rs` and [Configuration](configuration.md)).
 - **`Switcher<P, S>`** (`ops/switch.rs`) — generic over `P: HostPaths` and
   `S: SecretStore`, constructed once per CLI invocation and passed by
   reference into every op. This is the seam that makes the algorithm
   testable: production code instantiates `Switcher<&RealPaths,
   KeyringStore>`, tests instantiate `Switcher<&TestPaths, MemoryStore>`.
+  Its `load_snapshot` method is where the two storage halves above are
+  reassembled and validated together — see "Command flow" below.
 
 ## Command flow, end to end
 
@@ -98,10 +109,13 @@ error, output, paths, atomic
 3. `cmd_switch` calls `Switcher::switch_to("work")`, which: resolves `"work"`
    against `accounts.json` before touching anything; syncs the currently
    live account back to the store so a token Claude Code rotated isn't lost;
-   reads the target account's snapshot from `SecretStore`; applies it to the
-   live files via `ClaudeFiles::apply` (credentials written first, config
-   second, with a credentials rollback if the config write fails); and
-   updates `accounts.json` to mark the new account active.
+   reassembles the target account's complete snapshot via `load_snapshot`
+   (the `oauth` block from `SecretStore`, combined with the `account` /
+   `user_id` / schema recorded alongside it in `accounts.json`, then
+   validated as a unit); applies it to the live files via `ClaudeFiles::apply`
+   (credentials written first, config second, with a credentials rollback if
+   the config write fails); and updates `accounts.json` to mark the new
+   account active.
 4. `cmd_switch` renders the `SwitchOutcome` — either as JSON on stdout
    (`--json`) or as status/warning lines on stderr via `output.rs`.
 5. `main` maps `Ok`/`Err` to a process exit code, printing any error through

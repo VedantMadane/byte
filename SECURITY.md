@@ -71,7 +71,15 @@ through the normal ten-generation pruning — and neither `byte remove` nor
 deleting `~/.claude/.credentials.json` revokes the token itself — only
 Anthropic's auth servers can do that.
 
-`accounts.json`, byte's own metadata file, never contains a token — the
-credential store and the `backups/` directory do — so reading `accounts.json`
-alone (e.g. its contents ending up in a support bundle or backup) does not
-expose account credentials.
+`accounts.json`, byte's own metadata file, holds each stored account's
+profile: email, organization name, billing type, organization role,
+subscription tier, the associated Claude Code `userID`, and the
+added/last-used timestamps — in effect, the non-secret `oauthAccount` object
+Claude Code stores per account. It never contains a token — the credential
+store and the `backups/` directory do — so reading `accounts.json` alone
+(e.g. its contents ending up in a support bundle or backup) does not expose
+account credentials. That distinction matters more now than when
+`accounts.json` held only a handful of display fields, precisely because its
+inventory has grown to the full profile; the boundary that keeps it
+secret-free has not moved, but there is more non-secret data on the wrong
+side of a misreading of it than there used to be.

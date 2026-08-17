@@ -28,8 +28,7 @@ preserving key order and the original pretty-printed or minified formatting.
 
 ## byte's own configuration directory
 
-`accounts.json` (account metadata — label, email, organization, UUID; no
-secrets) and `backups/` (see below) live in `BYTE_CONFIG_DIR` if set,
+`accounts.json` and `backups/` (see below) live in `BYTE_CONFIG_DIR` if set,
 otherwise in the platform default:
 
 | Platform | Default `BYTE_CONFIG_DIR` |
@@ -42,20 +41,36 @@ Within that directory:
 
 | Path | Contents |
 |---|---|
-| `accounts.json` | Every stored account's metadata and which one is active. Safe to read directly; contains no secrets. |
+| `accounts.json` | Every stored account's metadata and which one is active: label, email, organization, UUID, billing type, organization role, subscription tier, the associated Claude Code `userID`, and added/last-used timestamps — in effect, the full `oauthAccount` profile Claude Code stores per account, plus display fields byte derives from it. No secrets: `accessToken`/`refreshToken` are never written here (see below). Safe to read directly. |
 | `backups/` | Timestamped copies of `.claude.json`, `.credentials.json`, and `accounts.json`, made before every write. The ten most recent per file are kept. See [Troubleshooting](troubleshooting.md) for how to restore one. |
+
+`accounts.json` carries its own `schema` field, versioning the document's
+layout independently of the per-account credential schema below. byte
+refuses to load a file whose `schema` it does not recognize rather than risk
+misparsing it — see the troubleshooting entry for
+`unsupported accounts.json schema version`.
 
 ## Where credentials are stored
 
-Each account's OAuth material (the full `claudeAiOauth` snapshot, refresh
-token included) is stored as one entry in the operating system's credential
-store, under the service name `byte-claude-account-switcher`:
+Only the `claudeAiOauth` object -- `accessToken`, `refreshToken`,
+`expiresAt`, and the other fields Claude Code writes into that block, but
+**not** the `oauthAccount` profile above -- is stored as one entry per
+account in the operating system's credential store, under the service name
+`byte-claude-account-switcher`:
 
 | Platform | Backend |
 |---|---|
 | Windows | Windows Credential Manager — look for a generic credential named `byte-claude-account-switcher`. |
 | macOS | The login Keychain — search for the service name `byte-claude-account-switcher`. |
 | Linux | A Secret Service provider (e.g. GNOME Keyring or KWallet) via `zbus`. |
+
+Splitting the two this way (rather than storing one combined entry per
+account) is what keeps each keychain entry under the OS credential store's
+size limit — Windows Credential Manager's is the tightest, at 1280
+characters once its UTF-16 encoding is accounted for, which a combined
+entry could exceed on an account with a large profile. `byte switch`
+reassembles the two halves in memory when it needs a complete snapshot to
+apply; neither half is ever written to disk combined.
 
 `accounts.json` never contains a refresh token or access token. The
 credential store does — and so, in plaintext, do the `.credentials.json`
