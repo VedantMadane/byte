@@ -43,12 +43,13 @@ A few behaviors worth calling out even though they aren't errors:
   to one of its files — always triggers a restore attempt before the error
   is reported, because `byte add` has already logged you out by the time it
   starts waiting. If the restore succeeds, you see the original error and
-  nothing more; your previous account is back. If the restore *also* fails,
-  you see both errors printed one after the other — the original cause,
-  then the restore failure — since losing track of either could leave you
-  unsure whether you're logged in as anything. Two errors from one
-  `byte add` is the signal to check `byte current` and, if it looks wrong,
-  follow "Recovering from a backup" below.
+  nothing more: your previous account is back if you had one, or a "nothing
+  to restore" status if you started `byte add` already logged out. If the
+  restore *also* fails, you see both errors printed one after the other —
+  the original cause, then the restore failure — since losing track of
+  either could leave you unsure whether you're logged in as anything. Two
+  errors from one `byte add` is the signal to check `byte current` and, if
+  it looks wrong, follow "Recovering from a backup" below.
 
 ## Recovering from a backup
 

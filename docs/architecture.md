@@ -114,10 +114,10 @@ error, output, paths, atomic
   the only place an `Error` is turned into user-facing text and an exit
   code.
 - **Output.** All user-facing text goes through `output.rs`'s semantic
-  helpers (`status`, `warn`, `info`, `header`, `error` on stderr; `data` on
-  stdout). No other module calls `println!`/`eprintln!` directly, which is
-  what keeps `--json` output pipeable — machine-readable data never shares a
-  stream with a status message.
+  helpers (`status`, `warn`, `info`, `header`, `error`, `confirm` on stderr;
+  `data` on stdout). No other module calls `println!`/`eprintln!` directly,
+  which is what keeps `--json` output pipeable — machine-readable data never
+  shares a stream with a status message.
 - **Configuration.** Two environment variables, both resolved once in
   `paths::RealPaths::discover()`; see [Configuration](configuration.md).
 - **Safety.** Every write to a Claude Code file goes through
