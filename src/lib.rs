@@ -1,0 +1,7 @@
+//! byte — claude account switcher
+
+pub mod output;
+
+pub fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}

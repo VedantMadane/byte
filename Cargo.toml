@@ -1,0 +1,19 @@
+[package]
+name = "byte"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+description = "claude account switcher"
+repository = "https://github.com/lindstrm/byte"
+readme = "README.md"
+
+[[bin]]
+name = "byte"
+path = "src/main.rs"
+
+[lib]
+name = "byte"
+path = "src/lib.rs"
+
+[dependencies]
