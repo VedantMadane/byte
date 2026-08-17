@@ -1671,13 +1671,14 @@ Expected: FAIL — unresolved import `byte::store`.
 
 - [ ] **Step 3: Write the implementation**
 
-Create `src/store/mod.rs`:
+Create `src/store/mod.rs`. It declares only `metadata` for now — `secrets.rs`
+does not exist until Task 7, and declaring a module whose file is missing is a
+compile error:
 
 ```rust
 //! byte's own persisted state.
 
 pub mod metadata;
-pub mod secrets;
 ```
 
 Create `src/store/metadata.rs`:
@@ -2072,6 +2073,16 @@ impl SecretStore for MemoryStore {
         Ok(())
     }
 }
+```
+
+Now declare the module. Task 6 created `src/store/mod.rs` with only `metadata`;
+add `secrets` to it so the file reads:
+
+```rust
+//! byte's own persisted state.
+
+pub mod metadata;
+pub mod secrets;
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
