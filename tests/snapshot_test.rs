@@ -182,6 +182,72 @@ fn apply_rolls_back_credentials_when_the_config_write_fails() {
 }
 
 #[test]
+fn apply_succeeds_even_when_backup_pruning_cannot_remove_an_old_entry() {
+    // Finding C1: `atomic::prune` failing must never invalidate a write
+    // that has already been committed and verified -- previously
+    // `JsonDocument::save` propagated a prune failure with `?` *after* the
+    // new bytes were already on disk and verified, so `apply()` reported a
+    // failed switch even though the credentials file had already been
+    // replaced.
+    //
+    // This seeds exactly ten pre-existing `.credentials.json` backups (the
+    // retention limit), so apply()'s own creds.save() call -- which backs
+    // up the live file before overwriting it -- pushes the count to eleven
+    // and prune() must remove one. The oldest (lowest-timestamp) entry is a
+    // DIRECTORY rather than a file: `std::fs::remove_file` fails on a
+    // directory on every platform (EISDIR on POSIX, access-denied on
+    // Windows), which portably forces prune() to hit the exact failure this
+    // finding is about without relying on permissions or ACLs.
+    let tp = TestPaths::new().unwrap();
+    seed(&tp, "uuid-1", "a@example.com", "refresh-1");
+    let backup_dir = tp.backup_dir();
+    let stem = tp
+        .claude_credentials()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+
+    std::fs::create_dir(backup_dir.join(format!("{stem}.0000000000000.bak"))).unwrap();
+    for i in 1..10u64 {
+        std::fs::write(backup_dir.join(format!("{stem}.{i:013}.bak")), b"old").unwrap();
+    }
+
+    let files = ClaudeFiles::new(&tp);
+    let target = AccountSnapshot::new(
+        json!({"accessToken": "access-2", "refreshToken": "refresh-2", "expiresAt": 99i64}),
+        json!({"accountUuid": "uuid-2", "emailAddress": "b@example.com"}),
+        Some("user-2".to_string()),
+    );
+
+    let result = files.apply(&target);
+
+    assert!(
+        result.is_ok(),
+        "apply() must not fail merely because pruning an old backup failed: {result:?}"
+    );
+
+    // Both live files must agree on the NEW account -- the switch must have
+    // gone all the way through, not stalled or partially reverted because
+    // of the unrelated backup-pruning failure.
+    let creds: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(tp.claude_credentials()).unwrap()).unwrap();
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(tp.claude_config()).unwrap()).unwrap();
+    assert_eq!(creds["claudeAiOauth"]["refreshToken"], json!("refresh-2"));
+    assert_eq!(cfg["oauthAccount"]["accountUuid"], json!("uuid-2"));
+
+    // The undeletable directory backup must still be there -- proves prune
+    // actually hit (and survived) the failure, rather than this test
+    // accidentally not exercising it at all.
+    assert!(
+        backup_dir
+            .join(format!("{stem}.0000000000000.bak"))
+            .is_dir()
+    );
+}
+
+#[test]
 fn capture_then_apply_round_trips_exactly() {
     let tp = TestPaths::new().unwrap();
     seed(&tp, "uuid-1", "a@example.com", "refresh-1");

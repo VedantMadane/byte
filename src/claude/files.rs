@@ -47,14 +47,18 @@ impl<P: HostPaths> ClaudeFiles<P> {
 
     /// Make `snapshot` the logged-in account, leaving all other keys alone.
     ///
-    /// The credentials file is written first. If the config-file half then
-    /// fails for any reason — it cannot be loaded, or it cannot be saved —
-    /// the credentials file is rolled back to what it held before this call,
-    /// so the two files never disagree about which account is active. Left
-    /// unhandled, that disagreement is not just cosmetic: a later capture
-    /// would pair the *new* account's tokens with the *old* account's
-    /// identity, and applying that hybrid to the account store would
-    /// overwrite the old account's stored refresh token permanently.
+    /// The credentials file is written first. If anything past that point
+    /// fails -- the credentials write itself (e.g. a housekeeping-adjacent
+    /// I/O error), or the config-file half (it cannot be loaded, or it
+    /// cannot be saved) -- the credentials file is rolled back to what it
+    /// held before this call, so the two files never disagree about which
+    /// account is active. Left unhandled, that disagreement is not just
+    /// cosmetic: a later capture would pair the *new* account's tokens with
+    /// the *old* account's identity, and applying that hybrid to the account
+    /// store would overwrite the old account's stored refresh token
+    /// permanently. Every fallible step after the credentials write commits
+    /// therefore goes through `rollback_credentials`, not just the
+    /// config-file half.
     pub fn apply(&self, snapshot: &AccountSnapshot) -> Result<()> {
         snapshot.validate()?;
         let backups = self.paths.backup_dir();
@@ -63,7 +67,15 @@ impl<P: HostPaths> ClaudeFiles<P> {
         let mut creds = JsonDocument::load_or_empty(&creds_path)?;
         let original_creds = creds.clone();
         creds.set(OAUTH_KEY, snapshot.oauth.clone());
-        creds.save(&creds_path, &backups)?;
+
+        if let Err(creds_error) = creds.save(&creds_path, &backups) {
+            return Err(rollback_credentials(
+                &original_creds,
+                &creds_path,
+                &backups,
+                creds_error,
+            ));
+        }
 
         if let Err(config_error) = self.apply_config(snapshot, &backups) {
             return Err(rollback_credentials(
@@ -109,25 +121,26 @@ impl<P: HostPaths> ClaudeFiles<P> {
     }
 }
 
-/// Restore `creds_path` to `original`'s content after `apply()`'s config half
-/// failed, so the two files never end up disagreeing about which account is
+/// Restore `creds_path` to `original`'s content after either half of
+/// `apply()` failed -- the credentials write itself, or the config-file half
+/// -- so the two files never end up disagreeing about which account is
 /// active.
 ///
-/// Returns `config_error` unchanged when the rollback succeeds. If the
-/// rollback itself fails, that is not silently swallowed: the caller gets
+/// Returns `cause` unchanged when the rollback succeeds. If the rollback
+/// itself fails, that is not silently swallowed: the caller gets
 /// `Error::ApplyRollbackFailed`, which carries both failures, because at that
 /// point the files really are left inconsistent and the user must be told.
 fn rollback_credentials(
     original: &JsonDocument,
     creds_path: &Path,
     backups: &Path,
-    config_error: Error,
+    cause: Error,
 ) -> Error {
     match original.save(creds_path, backups) {
-        Ok(()) => config_error,
+        Ok(()) => cause,
         Err(rollback_source) => Error::ApplyRollbackFailed {
             creds_path: creds_path.to_path_buf(),
-            config_error: config_error.to_string(),
+            apply_error: cause.to_string(),
             rollback_source: Box::new(rollback_source),
         },
     }

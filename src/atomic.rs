@@ -8,6 +8,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
+use crate::output;
 
 fn io_err(path: &Path) -> impl Fn(std::io::Error) -> Error + '_ {
     move |source| Error::Io {
@@ -67,13 +68,30 @@ pub fn restore(backup: &Path, path: &Path) -> Result<()> {
 }
 
 /// Keep only the `keep` newest backups whose name begins with `stem`.
-pub fn prune(backup_dir: &Path, stem: &str, keep: usize) -> Result<()> {
+///
+/// Infallible by contract: this is pure housekeeping on files that have
+/// already served their purpose (the write they were protecting has already
+/// been committed and verified by the time this runs), so a failure here
+/// must never invalidate that write. Problems are reported via
+/// `output::warn` instead of `Result`, and a failure removing one backup
+/// does not stop the rest from being pruned.
+pub fn prune(backup_dir: &Path, stem: &str, keep: usize) {
     if !backup_dir.is_dir() {
-        return Ok(());
+        return;
     }
     let prefix = format!("{stem}.");
-    let mut found: Vec<PathBuf> = std::fs::read_dir(backup_dir)
-        .map_err(io_err(backup_dir))?
+    let entries = match std::fs::read_dir(backup_dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            output::warn(&format!(
+                "could not list {} to prune old backups: {e}",
+                backup_dir.display()
+            ));
+            return;
+        }
+    };
+
+    let mut found: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
@@ -88,7 +106,11 @@ pub fn prune(backup_dir: &Path, stem: &str, keep: usize) -> Result<()> {
     found.sort();
     let excess = found.len().saturating_sub(keep);
     for path in found.into_iter().take(excess) {
-        std::fs::remove_file(&path).map_err(io_err(&path))?;
+        if let Err(e) = std::fs::remove_file(&path) {
+            output::warn(&format!(
+                "could not remove old backup {}: {e}",
+                path.display()
+            ));
+        }
     }
-    Ok(())
 }

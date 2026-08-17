@@ -8,7 +8,7 @@
 //! struct, because any field such a struct did not know about would be
 //! silently dropped.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -123,6 +123,12 @@ impl JsonDocument {
 
     /// Back up, write atomically, then verify. On verification failure the
     /// backup is restored and an error is returned (spec §5.3, §5.5).
+    ///
+    /// Pruning old backups afterward is pure housekeeping (see
+    /// `atomic::prune`) and cannot turn an already-verified, already-committed
+    /// write into an `Err` -- that was the credential-loss hazard behind
+    /// finding C1: a `save()` that reports failure after the new bytes are
+    /// already on disk looks to every caller like nothing happened.
     pub fn save(&self, path: &Path, backup_dir: &Path) -> Result<()> {
         let bytes = self.to_bytes()?;
         let saved = atomic::backup(path, backup_dir)?;
@@ -132,18 +138,33 @@ impl JsonDocument {
         match std::fs::read(path) {
             Ok(written) if written == bytes => {
                 if let Some(name) = path.file_name() {
-                    atomic::prune(backup_dir, &name.to_string_lossy(), 10)?;
+                    atomic::prune(backup_dir, &name.to_string_lossy(), 10);
                 }
                 Ok(())
             }
-            _ => {
-                if let Some(saved) = saved {
-                    atomic::restore(&saved, path)?;
-                }
-                Err(Error::VerifyFailed {
-                    path: path.to_path_buf(),
-                })
-            }
+            _ => Err(verify_failed(path, saved)),
         }
+    }
+}
+
+/// Build the error for a failed write verification, having attempted to
+/// restore the pre-write backup first. `backup` is `None` when there was
+/// nothing to restore (the file did not exist before this write).
+///
+/// The restore attempt itself can fail too -- a second I/O problem on top of
+/// the first. That case still errors, but as `VerifyRestoreFailed` carrying
+/// the restore failure, not a bare `Io` that would read like the write
+/// verification issue never happened.
+fn verify_failed(path: &Path, backup: Option<PathBuf>) -> Error {
+    let path = path.to_path_buf();
+    match backup {
+        Some(backup) => match atomic::restore(&backup, &path) {
+            Ok(()) => Error::VerifyFailed { path },
+            Err(restore_source) => Error::VerifyRestoreFailed {
+                path,
+                restore_source: Box::new(restore_source),
+            },
+        },
+        None => Error::VerifyFailed { path },
     }
 }

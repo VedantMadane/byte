@@ -81,7 +81,7 @@ impl AccountsFile {
         // .credentials.json, which JsonDocument::save already prunes to the
         // same limit.
         if let Some(name) = path.file_name() {
-            atomic::prune(backup_dir, &name.to_string_lossy(), 10)?;
+            atomic::prune(backup_dir, &name.to_string_lossy(), 10);
         }
         Ok(())
     }
