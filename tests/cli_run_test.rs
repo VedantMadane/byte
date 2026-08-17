@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use byte::Error;
 use byte::claude::files::ClaudeFiles;
+use byte::claude::snapshot::SCHEMA_VERSION;
 use byte::cli::run::{cmd_add, resolve_add_failure, switch_json};
 use byte::ops::switch::{SwitchOutcome, Switcher, SyncOutcome};
 use byte::paths::{HostPaths, TestPaths};
@@ -28,6 +29,9 @@ fn meta(uuid: &str, label: &str) -> AccountMeta {
         email: None,
         organization_name: None,
         subscription_type: None,
+        account: json!({}),
+        user_id: None,
+        credential_schema: SCHEMA_VERSION,
         added_at: "2026-01-01T00:00:00Z".to_string(),
         last_used_at: None,
     }

@@ -1,10 +1,9 @@
 use byte::claude::files::ClaudeFiles;
-use byte::claude::snapshot::AccountSnapshot;
 use byte::ops::add::AddSession;
 use byte::ops::switch::Switcher;
 use byte::paths::{HostPaths, TestPaths};
 use byte::store::secrets::{MemoryStore, SecretStore};
-use serde_json::json;
+use serde_json::{Value, json};
 
 /// A store that accepts every write but can never read one back --
 /// simulates `begin`'s recoverability check failing even though
@@ -15,11 +14,11 @@ use serde_json::json;
 struct UnreadableStore;
 
 impl SecretStore for UnreadableStore {
-    fn put(&self, _uuid: &str, _snapshot: &AccountSnapshot) -> byte::Result<()> {
+    fn put(&self, _uuid: &str, _oauth: &Value) -> byte::Result<()> {
         Ok(())
     }
 
-    fn get(&self, _uuid: &str) -> byte::Result<Option<AccountSnapshot>> {
+    fn get(&self, _uuid: &str) -> byte::Result<Option<Value>> {
         Ok(None)
     }
 

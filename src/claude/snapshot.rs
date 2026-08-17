@@ -34,6 +34,27 @@ impl AccountSnapshot {
         }
     }
 
+    /// Reassemble a snapshot from its two stored halves (spec §6.3): the
+    /// secret `oauth` block, read from the OS keychain, and the non-secret
+    /// `account` / `user_id` recorded alongside it in `accounts.json`.
+    ///
+    /// Deliberately distinct from `new()`, which always stamps the
+    /// *current* `SCHEMA_VERSION`. `new()` is only right for a snapshot
+    /// freshly captured from the live Claude Code files -- reassembling a
+    /// *stored* one must instead carry forward whatever schema version it
+    /// was captured under, so `validate()` can still refuse a stored
+    /// account that predates a schema bump. Using `new()` here would
+    /// silently re-stamp every reassembly as current and defeat that check
+    /// (spec risk 2).
+    pub fn reassemble(oauth: Value, account: Value, user_id: Option<String>, schema: u32) -> Self {
+        Self {
+            schema,
+            oauth,
+            account,
+            user_id,
+        }
+    }
+
     fn account_str(&self, key: &str) -> Option<&str> {
         self.account.get(key).and_then(Value::as_str)
     }

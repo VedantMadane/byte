@@ -408,11 +408,16 @@ fn validate_accepts_a_well_formed_snapshot() {
 
 #[test]
 fn account_snapshot_survives_a_json_round_trip() {
-    // `KeyringStore` is the only place that actually serializes an
-    // `AccountSnapshot` (its `MemoryStore` test double stores clones, not
-    // JSON) — so this is the only test that exercises the exact code path
-    // real users depend on. Nested, multi-key oauth/account objects so a
-    // dropped or renamed field would be caught, not masked by an empty value.
+    // Since the keychain-size fix, nothing in production code serializes a
+    // whole `AccountSnapshot` anymore -- `KeyringStore` stores only the
+    // `oauth` block (see `tests/secrets_test.rs`), and `account`/`user_id`
+    // are plain fields on `AccountMeta`, populated via `upsert_from`, not a
+    // nested `AccountSnapshot` (see `tests/metadata_test.rs`). This test
+    // still pins the type's own `Serialize`/`Deserialize` round trip, since
+    // it remains part of the public API and is cheap insurance against a
+    // silently dropped or renamed field. Nested, multi-key oauth/account
+    // objects so such a field would be caught, not masked by an empty
+    // value.
     let original = AccountSnapshot::new(
         json!({
             "accessToken": "access-1",

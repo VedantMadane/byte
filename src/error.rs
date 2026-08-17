@@ -42,6 +42,9 @@ pub enum Error {
     #[error("unsupported snapshot schema version {found}; this build expects {expected}")]
     SchemaMismatch { found: u32, expected: u32 },
 
+    #[error("unsupported accounts.json schema version {found}; this build expects {expected}")]
+    AccountsSchemaMismatch { found: u32, expected: u32 },
+
     #[error("stored credentials for '{account}' are unusable: {reason}")]
     InvalidSnapshot { account: String, reason: String },
 

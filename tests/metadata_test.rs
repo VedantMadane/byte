@@ -117,6 +117,129 @@ fn accounts_survive_a_save_and_load_cycle() {
     assert_eq!(loaded.accounts[0].uuid, "u1");
     assert_eq!(loaded.accounts[0].label, "a@example.com");
     assert_eq!(loaded.accounts[0].email.as_deref(), Some("a@example.com"));
+    // The keychain-size fix's whole reason for being: the non-secret half
+    // of a snapshot (account block, userID, credential schema) must
+    // survive the same save/load cycle as the display fields above, since
+    // `load_snapshot` depends on reading it back intact to reassemble a
+    // complete `AccountSnapshot` later.
+    assert_eq!(
+        loaded.accounts[0].account,
+        json!({"accountUuid": "u1", "emailAddress": "a@example.com", "organizationName": "Org"})
+    );
+    assert_eq!(loaded.accounts[0].user_id.as_deref(), Some("uid"));
+    assert_eq!(loaded.accounts[0].credential_schema, 1);
+}
+
+#[test]
+fn upsert_from_carries_the_full_account_block_and_user_id_for_reassembly() {
+    // Direct unit coverage of the keychain-size fix's core data-flow change:
+    // upsert_from must copy `account`, `user_id`, and `schema` off the
+    // snapshot verbatim, not just the flattened display fields (email,
+    // organization_name, subscription_type) it already extracted before
+    // this fix. Nested, multi-key account object so a field silently
+    // dropped in transit would be caught, not masked by an empty value.
+    let mut file = AccountsFile::default();
+    let snapshot = AccountSnapshot::new(
+        json!({"refreshToken": "r", "expiresAt": 1i64}),
+        json!({
+            "accountUuid": "u1",
+            "emailAddress": "a@example.com",
+            "displayName": "Ada",
+            "billingType": "organization",
+            "organizationRole": "admin"
+        }),
+        Some("user-1".to_string()),
+    );
+
+    let meta = file.upsert_from("u1", &snapshot);
+
+    assert_eq!(meta.account, snapshot.account);
+    assert_eq!(meta.user_id, snapshot.user_id);
+    assert_eq!(meta.credential_schema, snapshot.schema);
+}
+
+#[test]
+fn saved_accounts_json_never_contains_the_oauth_tokens() {
+    // Invariant: accounts.json must never carry a secret. After the
+    // keychain-size fix, only the `oauth` block (claudeAiOauth, holding
+    // accessToken/refreshToken) stays keychain-only -- the non-secret
+    // `account` (oauthAccount) and `user_id` now travel with AccountMeta,
+    // so this is the one place a regression could leak a token into the
+    // metadata file. Checked at the only boundary that actually matters:
+    // the literal bytes written to disk, not the in-memory struct.
+    let tp = TestPaths::new().unwrap();
+    let mut file = AccountsFile::default();
+
+    let snapshot = AccountSnapshot::new(
+        json!({
+            "accessToken": "super-secret-access-token-value",
+            "refreshToken": "super-secret-refresh-token-value",
+            "expiresAt": 1234567890i64,
+        }),
+        json!({"accountUuid": "u1", "emailAddress": "a@example.com"}),
+        Some("user-1".to_string()),
+    );
+    file.upsert_from("u1", &snapshot);
+    file.save(&tp.accounts_file(), &tp.backup_dir()).unwrap();
+
+    let text = std::fs::read_to_string(tp.accounts_file()).unwrap();
+    assert!(
+        !text.contains("super-secret-access-token-value"),
+        "accounts.json must never contain the access token:\n{text}"
+    );
+    assert!(
+        !text.contains("super-secret-refresh-token-value"),
+        "accounts.json must never contain the refresh token:\n{text}"
+    );
+    // Belt and suspenders: the field names themselves should not appear
+    // either, since their presence would mean the whole oauth block leaked
+    // in, not just a token value that happens to be checked above.
+    assert!(!text.contains("accessToken"), "leaked field name:\n{text}");
+    assert!(!text.contains("refreshToken"), "leaked field name:\n{text}");
+}
+
+#[test]
+fn loading_an_unrecognized_schema_version_is_rejected_with_a_clear_error() {
+    // accounts.json must fail closed on a schema it does not understand,
+    // rather than silently misparsing (e.g. every AccountMeta ending up
+    // with an empty `account` block because the fields just didn't match)
+    // or crashing with a raw serde error that doesn't say what's wrong.
+    let tp = TestPaths::new().unwrap();
+    std::fs::write(
+        tp.accounts_file(),
+        json!({"schema": 1, "active": null, "accounts": []}).to_string(),
+    )
+    .unwrap();
+
+    let err = AccountsFile::load(&tp.accounts_file()).unwrap_err();
+
+    assert!(matches!(
+        err,
+        Error::AccountsSchemaMismatch {
+            found: 1,
+            expected: 2
+        }
+    ));
+}
+
+#[test]
+fn loading_accounts_json_with_no_schema_field_at_all_is_rejected_not_misparsed() {
+    // A degenerate case of the same guard: a `schema` key that is missing
+    // entirely (not just an old version) must not be treated as valid --
+    // it reads as version 0, which can never match the current schema.
+    let tp = TestPaths::new().unwrap();
+    std::fs::write(
+        tp.accounts_file(),
+        json!({"active": null, "accounts": []}).to_string(),
+    )
+    .unwrap();
+
+    let err = AccountsFile::load(&tp.accounts_file()).unwrap_err();
+
+    assert!(matches!(
+        err,
+        Error::AccountsSchemaMismatch { found: 0, .. }
+    ));
 }
 
 #[test]

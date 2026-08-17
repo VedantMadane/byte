@@ -3,6 +3,7 @@
 use serde_json::Value;
 
 use crate::claude::files::ClaudeFiles;
+use crate::claude::snapshot::AccountSnapshot;
 use crate::error::{Error, Result};
 use crate::paths::HostPaths;
 use crate::store::metadata::{AccountMeta, AccountsFile};
@@ -64,6 +65,46 @@ impl<P: HostPaths + Copy, S: SecretStore> Switcher<P, S> {
         file.save(&self.paths.accounts_file(), &self.paths.backup_dir())
     }
 
+    /// Reassemble a stored account's complete snapshot from its two halves:
+    /// the secret `oauth` block in the OS keychain, and the non-secret
+    /// `account` / `user_id` / `credential_schema` recorded alongside it in
+    /// `meta` (see `store::metadata` and `store::secrets` for why they are
+    /// split, and `AccountSnapshot::reassemble` for why the schema is
+    /// threaded through rather than assumed current).
+    ///
+    /// The two halves are written together (every `put`/`upsert_from` pair
+    /// in this file) but not atomically -- they are two different storage
+    /// backends -- so this is the seam where a disagreement between them
+    /// would surface: the keychain entry deleted out from under byte,
+    /// `accounts.json` hand-edited, or a crash between the two writes. The
+    /// `validate()` call at the end is what actually catches that: a
+    /// half-reassembled snapshot must never reach `apply()`.
+    ///
+    /// `pub`, like `cli::run::resolve_add_failure`, specifically so
+    /// `tests/switch_test.rs` can exercise reassembly's failure modes
+    /// directly, without needing a full live Claude Code login to reach
+    /// them through `switch_to`.
+    pub fn load_snapshot(&self, meta: &AccountMeta) -> Result<AccountSnapshot> {
+        let oauth = self
+            .secrets
+            .get(&meta.uuid)?
+            .ok_or_else(|| Error::InvalidSnapshot {
+                account: meta.label.clone(),
+                reason: "no stored credentials in the OS keychain; re-authenticate with \
+                         `byte add`"
+                    .into(),
+            })?;
+
+        let snapshot = AccountSnapshot::reassemble(
+            oauth,
+            meta.account.clone(),
+            meta.user_id.clone(),
+            meta.credential_schema,
+        );
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+
     /// Save whatever account is live right now, then mark it active.
     pub fn capture_current(&self) -> Result<AccountMeta> {
         let snapshot = self.files().capture()?.ok_or(Error::NotLoggedIn)?;
@@ -80,7 +121,7 @@ impl<P: HostPaths + Copy, S: SecretStore> Switcher<P, S> {
         let meta = accounts.upsert_from(&uuid, &snapshot);
         accounts.set_active(&uuid);
 
-        self.secrets.put(&uuid, &snapshot)?;
+        self.secrets.put(&uuid, &snapshot.oauth)?;
         self.save_accounts(&accounts)?;
         Ok(meta)
     }
@@ -130,7 +171,7 @@ impl<P: HostPaths + Copy, S: SecretStore> Switcher<P, S> {
         let known = accounts.accounts.iter().any(|a| a.uuid == uuid);
 
         let meta = accounts.upsert_from(&uuid, &snapshot);
-        self.secrets.put(&uuid, &snapshot)?;
+        self.secrets.put(&uuid, &snapshot.oauth)?;
         self.save_accounts(&accounts)?;
 
         Ok(if known {
@@ -151,16 +192,19 @@ impl<P: HostPaths + Copy, S: SecretStore> Switcher<P, S> {
 
         let sync = self.sync_back()?;
 
-        let snapshot = self
-            .secrets
-            .get(&target_uuid)?
-            .ok_or_else(|| Error::InvalidSnapshot {
-                account: target_uuid.clone(),
-                reason: "no stored credentials; re-authenticate with `byte add`".into(),
-            })?;
-        snapshot.validate()?;
-
+        // Reloaded after sync_back, not reused from the resolve above --
+        // sync_back may just have written a fresh copy of the *live*
+        // account's metadata (including, when the target is already
+        // active, the target's own entry), and load_snapshot below must see
+        // that write, not a stale in-memory copy from before it happened.
         let mut accounts = self.load_accounts()?;
+        let target_meta = accounts
+            .accounts
+            .iter()
+            .find(|a| a.uuid == target_uuid)
+            .cloned()
+            .ok_or_else(|| Error::NoSuchAccount(target_uuid.clone()))?;
+        let snapshot = self.load_snapshot(&target_meta)?;
 
         // Derived from the identity `sync_back` just confirmed live, not
         // `accounts.active` -- `sync_back` never updates that pointer, so it

@@ -2,16 +2,33 @@
 //!
 //! Kept separate from the secret store so that listing accounts — including
 //! rendering the tray menu — never needs to unlock the OS keychain.
+//!
+//! Since the keychain-size fix, this is also where the non-secret half of a
+//! captured snapshot lives: the raw `oauthAccount` object (`account` below)
+//! and `userID` (`user_id`), which used to travel inside the same keychain
+//! entry as the secret `oauth` block. Splitting them out is what keeps a
+//! single account's keychain payload under the OS credential store's size
+//! limit (Windows Credential Manager's is the tightest, at 1280 characters
+//! per entry once UTF-16 encoding is accounted for) -- see
+//! `store::secrets` for the other half of the split.
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::atomic;
 use crate::claude::snapshot::AccountSnapshot;
 use crate::error::{Error, Result};
 
-const METADATA_SCHEMA: u32 = 1;
+/// Bumped when `accounts.json`'s own document shape changes -- e.g. when a
+/// field is added to or removed from [`AccountMeta`], as happened when the
+/// keychain-size fix added `account`, `user_id`, and `credential_schema`.
+/// Distinct from [`crate::claude::snapshot::SCHEMA_VERSION`], which versions
+/// a captured *credential* (the `oauth`/`account` pair), not the metadata
+/// file's own layout -- the two happen to both be at version 1/2 today but
+/// version independently.
+const METADATA_SCHEMA: u32 = 2;
 
 /// Everything shown about an account without touching its secrets.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -21,6 +38,20 @@ pub struct AccountMeta {
     pub email: Option<String>,
     pub organization_name: Option<String>,
     pub subscription_type: Option<String>,
+    /// The full `oauthAccount` object, held opaque exactly like
+    /// [`AccountSnapshot::account`] so that switching back to this account
+    /// restores every field Anthropic put there -- including ones byte does
+    /// not model -- not just the subset mirrored above for display without
+    /// a keychain unlock. Never holds a secret: `oauthAccount` is identity
+    /// and profile data (email, org, billing, roles), not credentials --
+    /// those live only in the `oauth` block, which never reaches this file.
+    pub account: Value,
+    /// The `userID` value from `.claude.json`.
+    pub user_id: Option<String>,
+    /// The [`AccountSnapshot::schema`] this account was captured under. See
+    /// [`crate::claude::snapshot::AccountSnapshot::reassemble`] for why this
+    /// must be threaded through rather than assumed current.
+    pub credential_schema: u32,
     pub added_at: String,
     pub last_used_at: Option<String>,
 }
@@ -62,7 +93,28 @@ impl AccountsFile {
             }
         };
 
-        serde_json::from_str(&raw).map_err(|source| Error::Parse {
+        // Parsed as a bare `Value` first, specifically so the schema can be
+        // checked *before* attempting to deserialize into `AccountsFile` --
+        // an incompatible schema (e.g. a pre-keychain-size-fix file with no
+        // `account`/`user_id`/`credential_schema` fields) would otherwise
+        // surface as a generic, confusing `Error::Parse` about a missing
+        // field rather than the clear "update byte" message this produces.
+        // A missing `schema` key reads as version 0, which can never match
+        // `METADATA_SCHEMA` and so is refused the same way.
+        let value: Value = serde_json::from_str(&raw).map_err(|source| Error::Parse {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+        let found = value.get("schema").and_then(Value::as_u64).unwrap_or(0) as u32;
+        if found != METADATA_SCHEMA {
+            return Err(Error::AccountsSchemaMismatch {
+                found,
+                expected: METADATA_SCHEMA,
+            });
+        }
+
+        serde_json::from_value(value).map_err(|source| Error::Parse {
             path: path.to_path_buf(),
             source,
         })
@@ -114,6 +166,13 @@ impl AccountsFile {
             email: snapshot.email().map(str::to_string),
             organization_name: snapshot.organization_name().map(str::to_string),
             subscription_type: snapshot.subscription_type().map(str::to_string),
+            // The non-secret half of the keychain-size split: stored here,
+            // verbatim and opaque, so a later reassemble() can hand
+            // `apply()` back every field this account's `oauthAccount`
+            // object had -- not just the display subset mirrored above.
+            account: snapshot.account.clone(),
+            user_id: snapshot.user_id.clone(),
+            credential_schema: snapshot.schema,
             added_at: match existing {
                 Some(i) => self.accounts[i].added_at.clone(),
                 None => now_rfc3339(),

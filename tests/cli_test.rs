@@ -1,5 +1,6 @@
 use std::process::{Command, Stdio};
 
+use byte::claude::snapshot::SCHEMA_VERSION;
 use byte::paths::{HostPaths, TestPaths};
 
 /// Runs the real binary against a throwaway config directory.
@@ -28,7 +29,7 @@ fn seed_one_account(tp: &TestPaths) {
     std::fs::write(
         tp.accounts_file(),
         serde_json::json!({
-            "schema": 1,
+            "schema": 2,
             "active": null,
             "accounts": [{
                 "uuid": "u1",
@@ -36,6 +37,9 @@ fn seed_one_account(tp: &TestPaths) {
                 "email": "w@example.com",
                 "organization_name": null,
                 "subscription_type": null,
+                "account": {"accountUuid": "u1", "emailAddress": "w@example.com"},
+                "user_id": null,
+                "credential_schema": SCHEMA_VERSION,
                 "added_at": "2026-01-01T00:00:00Z",
                 "last_used_at": null
             }]
