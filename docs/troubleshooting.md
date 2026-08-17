@@ -18,7 +18,7 @@ what's quoted here.
 | `secret store unavailable: ...` | The OS credential store is locked, unreachable, or (on Linux) no Secret Service provider is running. | Unlock your keychain / login session, or start a Secret Service provider (e.g. `gnome-keyring-daemon`), then retry. |
 | `write verification failed for <path>; the original was restored from backup` | byte wrote a file, then read it back and it didn't match what was written. byte already restored the pre-write backup automatically — this is reported so you know a write was rejected, not so you have to fix it. | Retry the command. If it fails repeatedly, check disk space and file permissions on the config directory. |
 | applying the account snapshot failed, and rolling back `<path>` afterwards also failed | The rarest failure: the config-file half of a switch failed, and restoring the credentials file to its pre-switch state *also* failed. The two files may now disagree about which account is active. | Follow "Recovering from a backup" below for both `.claude.json` and `.credentials.json`, then confirm with `claude` and `byte current` that they agree. |
-| `timed out after N seconds waiting for a new login` (`byte add`) | Nobody logged in as a different account within the timeout. byte already restored your previous account before reporting this. | Retry `byte add`, optionally with a longer `--timeout`, and log in via `claude` promptly. |
+| `timed out after N seconds waiting for a new login` (`byte add`) | Nobody logged in as a different account within the timeout. | Retry `byte add`, optionally with a longer `--timeout`, and log in via `claude` promptly. |
 
 A few behaviors worth calling out even though they aren't errors:
 
@@ -33,6 +33,17 @@ A few behaviors worth calling out even though they aren't errors:
   `claude` sessions keep using the previous account until restarted — it
   currently prints this unconditionally rather than detecting whether a
   session is actually running.
+- **Any failure while `byte add` is waiting for a login** — a timeout, or
+  anything else, such as a parse error from catching Claude Code mid-write
+  to one of its files — always triggers a restore attempt before the error
+  is reported, because `byte add` has already logged you out by the time it
+  starts waiting. If the restore succeeds, you see the original error and
+  nothing more; your previous account is back. If the restore *also* fails,
+  you see both errors printed one after the other — the original cause,
+  then the restore failure — since losing track of either could leave you
+  unsure whether you're logged in as anything. Two errors from one
+  `byte add` is the signal to check `byte current` and, if it looks wrong,
+  follow "Recovering from a backup" below.
 
 ## Recovering from a backup
 

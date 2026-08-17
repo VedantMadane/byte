@@ -180,3 +180,45 @@ fn abort_restores_the_previous_account() {
     let restored = ClaudeFiles::new(&tp).capture().unwrap().unwrap();
     assert_eq!(restored.email(), Some("a@example.com"));
 }
+
+#[test]
+fn poll_failure_does_not_prevent_recovering_the_previous_account() {
+    // Teeth-check for task-11 review Finding 1. byte polls both live files
+    // every 500ms for up to five minutes -- exactly the window in which
+    // Claude Code might be mid-write to one of them -- so a poll can catch
+    // a partial write and fail with Error::Parse. begin() has already
+    // logged u1 out by the time any poll runs (proven below by u1 no
+    // longer being live), so src/cli/run.rs's cmd_add now always calls
+    // abort() on a poll_once error rather than propagating it bare -- see
+    // resolve_add_failure and its unit tests in tests/cli_run_test.rs,
+    // which cover that decision on its own. This test proves the
+    // ingredient that fix depends on: a real poll_once failure, of the
+    // exact shape the review described, does not prevent abort() from
+    // still restoring the previous account afterward.
+    let tp = TestPaths::new().unwrap();
+    login_as(&tp, "u1", "a@example.com", "r1");
+    let sw = Switcher::new(&tp, MemoryStore::new());
+    let session = AddSession::begin(&sw).unwrap();
+    assert!(
+        ClaudeFiles::new(&tp).capture().unwrap().is_none(),
+        "begin() should have already logged u1 out before any poll runs"
+    );
+
+    // Simulate a poll catching Claude Code mid-write to .claude.json. This
+    // models the write of a *second* login being interrupted mid-poll, not
+    // u1's own data -- that's already safely in the store, untouched by
+    // this corruption.
+    std::fs::write(tp.claude_config(), "{ not valid json").unwrap();
+    let err = session.poll_once(&sw).unwrap_err();
+    assert!(matches!(err, byte::Error::Parse { .. }));
+
+    // The write completes a moment later, same as it would in reality --
+    // this models the interrupted write finishing, not byte fixing
+    // anything.
+    std::fs::write(tp.claude_config(), "{}").unwrap();
+
+    session.abort(&sw).unwrap();
+
+    let restored = ClaudeFiles::new(&tp).capture().unwrap().unwrap();
+    assert_eq!(restored.email(), Some("a@example.com"));
+}

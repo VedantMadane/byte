@@ -125,3 +125,46 @@ fn loading_a_missing_file_yields_an_empty_store() {
     let loaded = AccountsFile::load(&tp.accounts_file()).unwrap();
     assert!(loaded.accounts.is_empty());
 }
+
+#[test]
+fn save_prunes_accounts_json_backups_to_ten() {
+    // Regression test for task-11 review Finding 4: unlike .claude.json and
+    // .credentials.json (pruned by JsonDocument::save), accounts.json's own
+    // save() never called atomic::prune at all, so its backups grew
+    // unbounded -- one more per capture, switch, rename, and remove.
+    let tp = TestPaths::new().unwrap();
+    let path = tp.accounts_file();
+    let backup_dir = tp.backup_dir();
+    let stem = path.file_name().unwrap().to_string_lossy().to_string();
+
+    // Seed the accounts file so this save()'s own backup() call has
+    // something to back up, plus 12 synthetic pre-existing backups already
+    // over the retention limit. Synthetic filenames (rather than driving 12
+    // real save() calls in a loop) sidestep atomic::backup's
+    // millisecond-granularity timestamps, which a tight loop could
+    // otherwise collide on and silently produce fewer than 12 real files.
+    std::fs::write(&path, "{}").unwrap();
+    for i in 0..12u64 {
+        std::fs::write(backup_dir.join(format!("{stem}.{i:013}.bak")), "old").unwrap();
+    }
+
+    let mut file = AccountsFile::default();
+    file.upsert_from(&snap("u1", "a@example.com"));
+    file.save(&path, &backup_dir).unwrap();
+
+    let remaining: Vec<String> = std::fs::read_dir(&backup_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with(&format!("{stem}.")))
+        .collect();
+
+    // 12 synthetic backups plus 1 real one from this save()'s own backup()
+    // call = 13 candidates; without prune wired up, all 13 survive.
+    assert_eq!(
+        remaining.len(),
+        10,
+        "expected accounts.json backups capped at 10, found {}: {remaining:?}",
+        remaining.len()
+    );
+}

@@ -74,7 +74,16 @@ impl AccountsFile {
             source,
         })?;
         atomic::backup(path, backup_dir)?;
-        atomic::write(path, format!("{text}\n").as_bytes())
+        atomic::write(path, format!("{text}\n").as_bytes())?;
+
+        // Without this, accounts.json accumulates one backup per capture,
+        // switch, rename, and remove, unbounded -- unlike .claude.json and
+        // .credentials.json, which JsonDocument::save already prunes to the
+        // same limit.
+        if let Some(name) = path.file_name() {
+            atomic::prune(backup_dir, &name.to_string_lossy(), 10)?;
+        }
+        Ok(())
     }
 
     /// Insert or refresh the entry for a snapshot's account, returning the

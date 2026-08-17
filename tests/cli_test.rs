@@ -67,6 +67,13 @@ fn an_unknown_subcommand_exits_non_zero() {
 
 #[test]
 fn help_lists_every_command() {
+    // Anchored to the start of a (trimmed) line rather than `text.contains`:
+    // clap's per-command help text can itself contain another command's
+    // name as a plain substring -- e.g. "current"'s own description reads
+    // "Show the active account", but "capture"'s reads "Save the currently
+    // logged-in account", which contains "current" -- so a bare `contains`
+    // check would still pass with the `Current` subcommand deleted
+    // entirely. Every subcommand's own listing line starts with its name.
     let tp = TestPaths::new().unwrap();
     let out = byte(&tp, &["--help"]);
     let text = String::from_utf8_lossy(&out.stdout);
@@ -74,7 +81,10 @@ fn help_lists_every_command() {
     for cmd in [
         "list", "switch", "add", "capture", "remove", "rename", "current",
     ] {
-        assert!(text.contains(cmd), "help is missing '{cmd}':\n{text}");
+        assert!(
+            text.lines().any(|l| l.trim_start().starts_with(cmd)),
+            "help is missing a line starting with '{cmd}':\n{text}"
+        );
     }
 }
 
@@ -132,5 +142,31 @@ fn switching_to_an_unknown_account_names_it_in_the_error() {
     assert!(
         stderr.contains("nobody"),
         "expected the unresolved name in stderr, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn an_absurd_timeout_is_rejected_before_anything_else_runs() {
+    // Regression test for task-11 review Finding 7: an unvalidated u64
+    // `--timeout` let `Instant::now() + Duration::from_secs(timeout)` panic
+    // in cmd_add -- reachable only after AddSession::begin had already
+    // logged the user out. The value below comfortably fits in a u64 (so
+    // this exercises the new value_parser *range* specifically, not just
+    // u64::from_str's own overflow rejection) but is far outside
+    // Command::Add's 1..=86_400. clap now rejects it during argument
+    // parsing, before Cli::parse() even returns, so this is safe to
+    // exercise through the real binary: it never reaches
+    // RealPaths::discover(), let alone the keychain. A usage error (exit 2)
+    // and a clean stderr message, not a panic (which Command::output()
+    // would still report as a non-zero, non-2 exit and a backtrace on
+    // stderr), is what proves the fix, so both are checked explicitly.
+    let tp = TestPaths::new().unwrap();
+    let out = byte(&tp, &["add", "--timeout", "100000000000"]);
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("panicked"),
+        "an absurd --timeout must be a clean usage error, not a panic:\n{stderr}"
     );
 }

@@ -53,8 +53,12 @@ terminal, run `claude` and complete the login flow for your second account —
 personal, work, or whichever one you want to add. As soon as byte detects a
 new, different account has finished logging in, it saves it automatically and
 you're done. If nothing logs in within the timeout (5 minutes by default,
-override with `--timeout <seconds>`), byte restores the account you started
-with and exits with an error, so you're never left logged out.
+override with `--timeout <seconds>`), or if anything else goes wrong while
+waiting, byte attempts to restore the account you started with before
+reporting the error — so a failed `byte add` is, except in the rare case
+where the restore attempt *also* fails, not the same as being logged out.
+See [Troubleshooting](troubleshooting.md) for what to do if you ever see two
+errors printed instead of one.
 
 Run `byte list` again — you should now see two accounts.
 

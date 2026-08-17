@@ -21,9 +21,9 @@ pub fn run(cli: Cli) -> Result<()> {
         Some(Command::Current) => cmd_current(&switcher, cli.json),
         Some(Command::Switch { name }) => cmd_switch(&switcher, &name, cli.json),
         Some(Command::Capture) => cmd_capture(&switcher, cli.json),
-        Some(Command::Add { timeout }) => cmd_add(&switcher, timeout),
-        Some(Command::Remove { name }) => cmd_remove(&switcher, &name),
-        Some(Command::Rename { name, label }) => cmd_rename(&switcher, &name, &label),
+        Some(Command::Add { timeout }) => cmd_add(&switcher, timeout, cli.json),
+        Some(Command::Remove { name }) => cmd_remove(&switcher, &name, cli.json),
+        Some(Command::Rename { name, label }) => cmd_rename(&switcher, &name, &label, cli.json),
     }
 }
 
@@ -44,7 +44,9 @@ fn cmd_list(sw: &Switcher<&RealPaths, KeyringStore>, json: bool) -> Result<()> {
 
     if json {
         let payload: Vec<_> = listing.iter().map(listing_json).collect();
-        output::data(&serde_json::to_string_pretty(&payload).unwrap_or_default());
+        let text =
+            serde_json::to_string_pretty(&payload).map_err(|e| Error::Render(e.to_string()))?;
+        output::data(&text);
         return Ok(());
     }
 
@@ -121,35 +123,96 @@ fn cmd_capture(sw: &Switcher<&RealPaths, KeyringStore>, json: bool) -> Result<()
     Ok(())
 }
 
-fn cmd_add(sw: &Switcher<&RealPaths, KeyringStore>, timeout: u64) -> Result<()> {
+fn cmd_add(sw: &Switcher<&RealPaths, KeyringStore>, timeout: u64, json: bool) -> Result<()> {
     let session = AddSession::begin(sw)?;
 
     output::status("Claude Code is now logged out.");
     output::info("Run `claude` in another terminal and log in as the account you want to add.");
     output::info(&format!("Waiting up to {timeout} seconds..."));
 
+    // Safe from overflow: clap's value_parser restricts `timeout` to
+    // 1..=86_400 (see Command::Add in src/cli/mod.rs), nowhere near a
+    // Duration that could push this addition past Instant's range.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
     while std::time::Instant::now() < deadline {
-        if let Some(meta) = session.poll_once(sw)? {
-            output::status(&format!("Added {}", meta.label));
-            return Ok(());
+        match session.poll_once(sw) {
+            Ok(Some(meta)) => {
+                if json {
+                    output::data(&serde_json::json!({"added": meta.label}).to_string());
+                } else {
+                    output::status(&format!("Added {}", meta.label));
+                }
+                return Ok(());
+            }
+            Ok(None) => {}
+            // AddSession::begin has already cleared the live credentials by
+            // this point, so this failure must not simply propagate: that
+            // would leave the user logged out with no attempt to recover.
+            // Mirror the timeout path below -- try to restore first, then
+            // decide what to report.
+            Err(e) => {
+                let restore_result = session.abort(sw);
+                return resolve_add_failure(e, restore_result);
+            }
         }
         std::thread::sleep(POLL_INTERVAL);
     }
 
     output::warn("Timed out. Restoring the previous account.");
-    session.abort(sw)?;
-    Err(Error::LoginTimeout(timeout))
+    let restore_result = session.abort(sw);
+    resolve_add_failure(Error::LoginTimeout(timeout), restore_result)
 }
 
-fn cmd_remove(sw: &Switcher<&RealPaths, KeyringStore>, name: &str) -> Result<()> {
+/// Decide what `cmd_add` reports after a failure, given the outcome of
+/// already having tried to restore the previous account.
+///
+/// Neither failure may go unreported: if the restore succeeded, the
+/// *original* cause (a `poll_once` error or a timeout) is still what the
+/// user needs to see, so it becomes the returned `Err`. If the restore also
+/// failed, the original cause is printed directly here (it would otherwise
+/// vanish -- only one `Err` can be returned) and the restore failure -- the
+/// more urgent of the two, since it means the account may not actually have
+/// been put back -- becomes the returned `Err`, which `main` prints last.
+///
+/// Takes the restore attempt's `Result` rather than a `Switcher` and
+/// performing it itself, so this decision is unit-testable on its own
+/// without a `SecretStore` or any file/keychain I/O -- see
+/// `tests/cli_run_test.rs`. `pub` (rather than the other `cmd_*` helpers'
+/// default privacy) specifically so those tests can reach it.
+pub fn resolve_add_failure(cause: Error, restore_result: Result<()>) -> Result<()> {
+    match restore_result {
+        Ok(()) => {
+            output::status("Restored the previous account.");
+            Err(cause)
+        }
+        Err(abort_err) => {
+            output::error(&cause.to_string());
+            Err(abort_err)
+        }
+    }
+}
+
+fn cmd_remove(sw: &Switcher<&RealPaths, KeyringStore>, name: &str, json: bool) -> Result<()> {
     let meta = manage::remove(sw, name)?;
-    output::status(&format!("Removed {}", meta.label));
+    if json {
+        output::data(&serde_json::json!({"removed": meta.label}).to_string());
+    } else {
+        output::status(&format!("Removed {}", meta.label));
+    }
     Ok(())
 }
 
-fn cmd_rename(sw: &Switcher<&RealPaths, KeyringStore>, name: &str, label: &str) -> Result<()> {
+fn cmd_rename(
+    sw: &Switcher<&RealPaths, KeyringStore>,
+    name: &str,
+    label: &str,
+    json: bool,
+) -> Result<()> {
     let meta = manage::rename(sw, name, label)?;
-    output::status(&format!("Renamed to {}", meta.label));
+    if json {
+        output::data(&serde_json::json!({"renamed": meta.label}).to_string());
+    } else {
+        output::status(&format!("Renamed to {}", meta.label));
+    }
     Ok(())
 }

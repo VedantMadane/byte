@@ -48,6 +48,9 @@ pub enum Error {
     #[error("secret store unavailable: {0}")]
     Secret(String),
 
+    #[error("failed to render JSON output: {0}")]
+    Render(String),
+
     #[error("write verification failed for {path}; the original was restored from backup")]
     VerifyFailed { path: PathBuf },
 
