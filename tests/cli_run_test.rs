@@ -85,7 +85,7 @@ fn switch_json_reports_a_logged_out_sync_outcome_without_an_account() {
 
 #[test]
 fn reports_the_original_cause_when_the_restore_succeeds() {
-    let result = resolve_add_failure(Error::LoginTimeout(5), Ok(()));
+    let result = resolve_add_failure(Error::LoginTimeout(5), true, Ok(()));
 
     assert!(matches!(result, Err(Error::LoginTimeout(5))));
 }
@@ -96,7 +96,7 @@ fn reports_the_restore_failure_rather_than_the_original_cause_when_both_fail() {
     // *original* cause were returned here, the caller (and the user) would
     // never learn that the restore attempt -- their one path back to being
     // logged in -- also failed.
-    let result = resolve_add_failure(Error::LoginTimeout(5), Err(Error::NotLoggedIn));
+    let result = resolve_add_failure(Error::LoginTimeout(5), true, Err(Error::NotLoggedIn));
 
     assert!(matches!(result, Err(Error::NotLoggedIn)));
 }
@@ -107,9 +107,27 @@ fn distinguishes_a_poll_error_cause_from_a_timeout_cause() {
     // in is the one that surfaces when the restore succeeds, for the other
     // shape of failure cmd_add can report (a poll_once error, not just a
     // timeout).
-    let result = resolve_add_failure(Error::NotLoggedIn, Ok(()));
+    let result = resolve_add_failure(Error::NotLoggedIn, true, Ok(()));
 
     assert!(matches!(result, Err(Error::NotLoggedIn)));
+}
+
+#[test]
+fn had_previous_does_not_change_which_error_propagates() {
+    // Finding M7: resolve_add_failure claimed "Restored the previous
+    // account" whenever restore_result was Ok(()), even when there was no
+    // previous account to restore -- AddSession::abort()'s None branch also
+    // returns Ok(()) unconditionally. had_previous exists to fix the STATUS
+    // TEXT for that case (see tests/cli_test.rs for an end-to-end
+    // assertion on the actual stderr wording, which this module-level
+    // function can't observe on its own -- see the file header). What this
+    // test pins is the property `#[test]` code CAN observe here: had_previous
+    // must only change the message, never which Err propagates.
+    let with_previous = resolve_add_failure(Error::LoginTimeout(5), true, Ok(()));
+    let without_previous = resolve_add_failure(Error::LoginTimeout(5), false, Ok(()));
+
+    assert!(matches!(with_previous, Err(Error::LoginTimeout(5))));
+    assert!(matches!(without_previous, Err(Error::LoginTimeout(5))));
 }
 
 fn login_as(tp: &TestPaths, uuid: &str, email: &str, refresh: &str) {

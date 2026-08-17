@@ -191,16 +191,24 @@ pub fn cmd_add<P: HostPaths + Copy, S: SecretStore>(
             // Mirror the timeout path below -- try to restore first, then
             // decide what to report.
             Err(e) => {
+                let had_previous = session.previous().is_some();
                 let restore_result = session.abort(sw);
-                return resolve_add_failure(e, restore_result);
+                return resolve_add_failure(e, had_previous, restore_result);
             }
         }
         std::thread::sleep(POLL_INTERVAL);
     }
 
-    output::warn("Timed out. Restoring the previous account.");
+    let had_previous = session.previous().is_some();
+    if had_previous {
+        output::warn("Timed out. Restoring the previous account.");
+    } else {
+        output::warn(
+            "Timed out. Nothing to restore -- you were already logged out before this `byte add` started.",
+        );
+    }
     let restore_result = session.abort(sw);
-    resolve_add_failure(Error::LoginTimeout(timeout), restore_result)
+    resolve_add_failure(Error::LoginTimeout(timeout), had_previous, restore_result)
 }
 
 /// Decide what `cmd_add` reports after a failure, given the outcome of
@@ -214,15 +222,33 @@ pub fn cmd_add<P: HostPaths + Copy, S: SecretStore>(
 /// more urgent of the two, since it means the account may not actually have
 /// been put back -- becomes the returned `Err`, which `main` prints last.
 ///
+/// `had_previous` distinguishes a real restoration from a no-op one:
+/// `AddSession::abort` returns `Ok(())` both when it successfully restores a
+/// previous account AND when there was never one to restore (a `byte add`
+/// that started from an already-logged-out machine) -- without this,
+/// finding M7, the success arm below would claim "Restored the previous
+/// account" in the second case too, which is false twice over on a timeout
+/// (`cmd_add`'s own pre-abort warning made the same claim).
+///
 /// Takes the restore attempt's `Result` rather than a `Switcher` and
 /// performing it itself, so this decision is unit-testable on its own
 /// without a `SecretStore` or any file/keychain I/O -- see
 /// `tests/cli_run_test.rs`. `pub` (rather than the other `cmd_*` helpers'
 /// default privacy) specifically so those tests can reach it.
-pub fn resolve_add_failure(cause: Error, restore_result: Result<()>) -> Result<()> {
+pub fn resolve_add_failure(
+    cause: Error,
+    had_previous: bool,
+    restore_result: Result<()>,
+) -> Result<()> {
     match restore_result {
-        Ok(()) => {
+        Ok(()) if had_previous => {
             output::status("Restored the previous account.");
+            Err(cause)
+        }
+        Ok(()) => {
+            output::status(
+                "Nothing to restore -- you were already logged out before this `byte add` started.",
+            );
             Err(cause)
         }
         Err(abort_err) => {

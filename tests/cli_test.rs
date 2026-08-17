@@ -268,3 +268,44 @@ fn remove_of_an_unknown_account_reports_no_such_account_not_a_confirmation_promp
         "an unknown account should not prompt for confirmation:\n{stderr}"
     );
 }
+
+#[test]
+fn add_timeout_from_a_logged_out_start_does_not_claim_a_false_restoration() {
+    // Finding M7: resolve_add_failure (and cmd_add's own pre-abort warning)
+    // unconditionally claimed "Restor(ed/ing) the previous account" whenever
+    // the abort attempt returned Ok(()) -- but AddSession::abort() ALSO
+    // returns Ok(()) when there was no previous account to restore in the
+    // first place (previous == None), which is exactly this scenario: never
+    // logged in, so `byte add` times out with nothing to put back.
+    //
+    // Entirely keychain-free: both files are seeded as empty objects (no
+    // claudeAiOauth), so capture_current() short-circuits to NotLoggedIn
+    // before ever touching the secret store, and abort()'s None branch
+    // never calls switch_to. --timeout 1 keeps this fast (one or two
+    // 500ms polls) instead of waiting out the 300s default.
+    //
+    // Written directly under tp.root(), NOT via tp.claude_credentials()/
+    // tp.claude_config() -- those give TestPaths's own nested layout
+    // (<root>/.claude/.credentials.json), but the byte() helper below runs
+    // the compiled binary with CLAUDE_CONFIG_DIR=tp.root(), which resolves
+    // to the FLAT layout instead (<root>/.credentials.json,
+    // <root>/.claude.json). Using the wrong one here seeds a file the
+    // subprocess never reads, and it fails with ClaudeFileMissing instead.
+    let tp = TestPaths::new().unwrap();
+    std::fs::write(tp.root().join(".credentials.json"), "{}").unwrap();
+    std::fs::write(tp.root().join(".claude.json"), "{}").unwrap();
+
+    let out = byte(&tp, &["add", "--timeout", "1"]);
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("Restored the previous account")
+            && !stderr.contains("Restoring the previous account"),
+        "claimed a restoration that never happened (no previous account existed):\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Nothing to restore"),
+        "expected an accurate 'nothing to restore' message, got:\n{stderr}"
+    );
+}
