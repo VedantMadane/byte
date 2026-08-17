@@ -4,6 +4,7 @@
 //! tests use [`TestPaths`], which is rooted in a temporary directory that is
 //! deleted when it drops.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
@@ -59,9 +60,42 @@ pub struct RealPaths {
 
 impl RealPaths {
     pub fn discover() -> Result<Self> {
-        let home = home_dir().ok_or_else(|| Error::ClaudeFileMissing(PathBuf::from("$HOME")))?;
+        let claude_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
+        let byte_dir = std::env::var_os("BYTE_CONFIG_DIR");
 
-        let (claude_config, claude_credentials) = match std::env::var_os("CLAUDE_CONFIG_DIR") {
+        // home_dir() reads $HOME/%USERPROFILE%, which can legitimately be
+        // unset on a service account or a minimal CI container. Only
+        // resolve it when `resolve()` will actually use it below -- if both
+        // overrides are set, home is never consulted, so its absence must
+        // not block discovery (a machine with both env vars set and no
+        // $HOME could otherwise fail with a nonsensical
+        // ClaudeFileMissing("$HOME") despite neither override needing it).
+        let home = if claude_dir.is_some() && byte_dir.is_some() {
+            PathBuf::new()
+        } else {
+            home_dir().ok_or_else(|| Error::ClaudeFileMissing(PathBuf::from("$HOME")))?
+        };
+
+        Ok(Self::resolve(
+            &home,
+            claude_dir.as_deref(),
+            byte_dir.as_deref(),
+        ))
+    }
+
+    /// Pure path arithmetic, split out from [`discover`] so the mapping from
+    /// environment overrides to concrete paths is directly testable against
+    /// fixed inputs, rather than only through process-global environment
+    /// variables shared by every test in the binary. `pub` (like
+    /// `cli::run::resolve_add_failure`) specifically so `tests/paths_test.rs`
+    /// can reach it.
+    ///
+    /// `home` is read only when the corresponding override (`claude_dir` or
+    /// `byte_dir`) is absent. A caller that already knows both overrides are
+    /// set -- like [`discover`] -- may pass any placeholder path, since it
+    /// is then never dereferenced.
+    pub fn resolve(home: &Path, claude_dir: Option<&OsStr>, byte_dir: Option<&OsStr>) -> Self {
+        let (claude_config, claude_credentials) = match claude_dir {
             Some(dir) => {
                 let dir = PathBuf::from(dir);
                 (dir.join(".claude.json"), dir.join(".credentials.json"))
@@ -72,16 +106,16 @@ impl RealPaths {
             ),
         };
 
-        let byte_config_dir = match std::env::var_os("BYTE_CONFIG_DIR") {
+        let byte_config_dir = match byte_dir {
             Some(dir) => PathBuf::from(dir),
-            None => default_config_dir(&home),
+            None => default_config_dir(home),
         };
 
-        Ok(Self {
+        Self {
             claude_config,
             claude_credentials,
             byte_config_dir,
-        })
+        }
     }
 }
 
