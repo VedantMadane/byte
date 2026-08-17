@@ -3,6 +3,7 @@
 pub mod atomic;
 pub mod claude;
 pub mod error;
+pub mod ops;
 pub mod output;
 pub mod paths;
 pub mod store;
