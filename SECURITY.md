@@ -36,25 +36,42 @@ Service provider) so it can switch accounts without repeating a browser
 login. These are live credentials, and the honest framing is this: **anyone
 who can run code as the logged-in user can read them.**
 
-That is not a new exposure byte introduces. It is equally true today of
-Claude Code's own credential file, `~/.claude/.credentials.json`, which is
-the source byte copies those tokens from in the first place. byte does not
-worsen that posture — but it does not improve it either. It duplicates the
-same secret into a second location (one entry per stored account, in the OS
-credential store), so there are now two places, not one, where a local
-attacker with code-execution-as-you could read a live refresh token. Neither
-location adds encryption or access control beyond what the OS credential
-store already provides on its own.
+That is not a new exposure byte introduces for the credential store copy
+specifically: it is equally true today of Claude Code's own credential file,
+`~/.claude/.credentials.json`, which is the source byte copies those tokens
+from in the first place. But byte does hold a live refresh token in three
+places, not one, and the third has none of the other two's protection:
+
+1. `~/.claude/.credentials.json` — Claude Code's own file.
+2. The OS credential store — one entry per account byte has stored, under
+   the service name `byte-claude-account-switcher`.
+3. `<byte-config-dir>/backups/` — a **plaintext file**, refresh token
+   included, written before every capture, switch, and add (see
+   [Configuration](docs/configuration.md)). The ten most recent generations
+   per file are kept, so more than one past refresh token can be recovered
+   from here even after it has been rotated or the account removed.
+
+Locations 1 and 2 are on equal footing: both rely on the same OS-level
+protections, and neither adds encryption beyond what the platform already
+provides for a logged-in user's own data — this is the "byte does not
+worsen that posture" claim, and it is true of those two. Location 3 is not
+on that footing: it is an ordinary file with ordinary filesystem
+permissions, with none of the OS credential store's access control, holding
+up to ten generations of history instead of one live copy. A local attacker
+able to run code as you can read a live refresh token from any of the
+three, and the backups directory is the easiest of the three to overlook.
 
 If your threat model includes a local attacker able to run arbitrary code as
 you, the correct response to a suspected compromise is the same regardless
 of which copy was read: revoke the affected account's session from your
 claude.ai account settings. `byte remove <name>` deletes byte's copy of the
-credential (both its metadata entry and its OS credential store entry), but
-neither that nor deleting `~/.claude/.credentials.json` revokes the token
-itself — only Anthropic's auth servers can do that.
+credential from the OS credential store and its metadata entry, but it does
+**not** clear that account's past backups in `backups/` — those age out only
+through the normal ten-generation pruning — and neither `byte remove` nor
+deleting `~/.claude/.credentials.json` revokes the token itself — only
+Anthropic's auth servers can do that.
 
-`accounts.json`, byte's own metadata file, never contains a token — only the
-credential store entries do — so reading `accounts.json` alone (e.g. its
-contents ending up in a support bundle or backup) does not expose account
-credentials.
+`accounts.json`, byte's own metadata file, never contains a token — the
+credential store and the `backups/` directory do — so reading `accounts.json`
+alone (e.g. its contents ending up in a support bundle or backup) does not
+expose account credentials.

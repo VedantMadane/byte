@@ -10,7 +10,9 @@ claude account switcher
 - Switch between a personal and a work Claude account without logging out
   through the browser and back in again every time.
 - Credentials live in your OS's credential store (Windows Credential Manager,
-  macOS Keychain, or a Linux Secret Service provider), not a plaintext file.
+  macOS Keychain, or a Linux Secret Service provider). Pre-write backups are
+  plaintext, though — see [Security](SECURITY.md) for exactly where and for
+  how long.
 - Only the account identity is swapped. Settings, project history, plugins,
   and MCP server tokens are shared across accounts and never touched.
 - Every write is backed up first, replaced atomically, and verified

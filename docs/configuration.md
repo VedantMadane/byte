@@ -57,6 +57,12 @@ store, under the service name `byte-claude-account-switcher`:
 | macOS | The login Keychain — search for the service name `byte-claude-account-switcher`. |
 | Linux | A Secret Service provider (e.g. GNOME Keyring or KWallet) via `zbus`. |
 
-`accounts.json` never contains a refresh token or access token — only the
-credential store does. Removing an account with `byte remove` deletes both
-its metadata entry and its credential store entry.
+`accounts.json` never contains a refresh token or access token. The
+credential store does — and so, in plaintext, do the `.credentials.json`
+backups in `backups/` (above): once a refresh token has been live on this
+machine, it persists in one or more backup generations for a while
+afterward, independent of the credential store entry. Removing an account
+with `byte remove` deletes its metadata entry and its credential store
+entry, but does **not** delete its past backups. See
+[Security](../SECURITY.md#threat-model) for the full picture of where
+credentials rest and what removal does and doesn't clear.
