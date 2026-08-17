@@ -127,11 +127,17 @@ fn loading_a_missing_file_yields_an_empty_store() {
 }
 
 #[test]
-fn save_prunes_accounts_json_backups_to_ten() {
+fn save_prunes_accounts_json_backups_to_the_ten_newest() {
     // Regression test for task-11 review Finding 4: unlike .claude.json and
     // .credentials.json (pruned by JsonDocument::save), accounts.json's own
     // save() never called atomic::prune at all, so its backups grew
     // unbounded -- one more per capture, switch, rename, and remove.
+    //
+    // Finding M5: the original version of this test asserted only
+    // `remaining.len() == 10`, which a REVERSED sort in prune() -- deleting
+    // the ten newest and keeping the three oldest -- would also satisfy.
+    // This asserts identity: which twelve names survive and which three are
+    // gone, not merely how many files remain.
     let tp = TestPaths::new().unwrap();
     let path = tp.accounts_file();
     let backup_dir = tp.backup_dir();
@@ -143,6 +149,9 @@ fn save_prunes_accounts_json_backups_to_ten() {
     // real save() calls in a loop) sidestep atomic::backup's
     // millisecond-granularity timestamps, which a tight loop could
     // otherwise collide on and silently produce fewer than 12 real files.
+    // Their zero-padded 13-digit timestamps (0..11) are far smaller than any
+    // real millisecond-since-epoch value, so save()'s own backup() call --
+    // using the real current time -- is always the single newest entry.
     std::fs::write(&path, "{}").unwrap();
     for i in 0..12u64 {
         std::fs::write(backup_dir.join(format!("{stem}.{i:013}.bak")), "old").unwrap();
@@ -152,12 +161,13 @@ fn save_prunes_accounts_json_backups_to_ten() {
     file.upsert_from("u1", &snap("u1", "a@example.com"));
     file.save(&path, &backup_dir).unwrap();
 
-    let remaining: Vec<String> = std::fs::read_dir(&backup_dir)
+    let mut remaining: Vec<String> = std::fs::read_dir(&backup_dir)
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().to_string())
         .filter(|n| n.starts_with(&format!("{stem}.")))
         .collect();
+    remaining.sort();
 
     // 12 synthetic backups plus 1 real one from this save()'s own backup()
     // call = 13 candidates; without prune wired up, all 13 survive.
@@ -166,5 +176,36 @@ fn save_prunes_accounts_json_backups_to_ten() {
         10,
         "expected accounts.json backups capped at 10, found {}: {remaining:?}",
         remaining.len()
+    );
+
+    // The three OLDEST synthetic backups (i = 0, 1, 2) must be gone. A
+    // reversed sort would instead prune the three NEWEST synthetic backups
+    // (i = 9, 10, 11) plus the real one, still leaving exactly 10 files --
+    // indistinguishable from the correct outcome under a cardinality-only
+    // assertion.
+    for i in 0..3u64 {
+        let doomed = format!("{stem}.{i:013}.bak");
+        assert!(
+            !remaining.contains(&doomed),
+            "{doomed} should have been pruned as one of the three oldest, but survived: {remaining:?}"
+        );
+    }
+    for i in 3..12u64 {
+        let survivor = format!("{stem}.{i:013}.bak");
+        assert!(
+            remaining.contains(&survivor),
+            "{survivor} should have survived pruning, but is missing: {remaining:?}"
+        );
+    }
+    // Every synthetic name is accounted for above (9 survivors + 3 pruned =
+    // 12), so exactly one of the 10 remaining entries is not a synthetic
+    // name at all -- this save()'s own real-timestamp backup.
+    let non_synthetic = remaining
+        .iter()
+        .filter(|n| !(3..12u64).any(|i| **n == format!("{stem}.{i:013}.bak")))
+        .count();
+    assert_eq!(
+        non_synthetic, 1,
+        "expected exactly one non-synthetic (real) backup among the survivors: {remaining:?}"
     );
 }
