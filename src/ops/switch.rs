@@ -45,12 +45,6 @@ impl<P: HostPaths + Copy, S: SecretStore> Switcher<P, S> {
         &self.paths
     }
 
-    /// Exposed for `ops::manage`, which needs to save metadata-only edits
-    /// (rename, remove) without going through a capture or switch.
-    pub fn save_accounts_public(&self, file: &AccountsFile) -> Result<()> {
-        self.save_accounts(file)
-    }
-
     fn files(&self) -> ClaudeFiles<P> {
         ClaudeFiles::new(self.paths)
     }
@@ -60,11 +54,13 @@ impl<P: HostPaths + Copy, S: SecretStore> Switcher<P, S> {
         self.files()
     }
 
-    fn load_accounts(&self) -> Result<AccountsFile> {
+    /// Crate-visible for `ops::manage`, which lists and edits account
+    /// metadata directly without going through a capture or switch.
+    pub(crate) fn load_accounts(&self) -> Result<AccountsFile> {
         AccountsFile::load(&self.paths.accounts_file())
     }
 
-    fn save_accounts(&self, file: &AccountsFile) -> Result<()> {
+    pub(crate) fn save_accounts(&self, file: &AccountsFile) -> Result<()> {
         file.save(&self.paths.accounts_file(), &self.paths.backup_dir())
     }
 

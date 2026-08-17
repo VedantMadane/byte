@@ -3,7 +3,7 @@
 use crate::error::Result;
 use crate::ops::switch::Switcher;
 use crate::paths::HostPaths;
-use crate::store::metadata::{AccountMeta, AccountsFile};
+use crate::store::metadata::AccountMeta;
 use crate::store::secrets::SecretStore;
 
 /// An account plus whether it is the active one.
@@ -13,14 +13,10 @@ pub struct AccountListing {
     pub active: bool,
 }
 
-fn accounts<P: HostPaths + Copy, S: SecretStore>(sw: &Switcher<P, S>) -> Result<AccountsFile> {
-    AccountsFile::load(&sw.paths().accounts_file())
-}
-
 pub fn list<P: HostPaths + Copy, S: SecretStore>(
     sw: &Switcher<P, S>,
 ) -> Result<Vec<AccountListing>> {
-    let file = accounts(sw)?;
+    let file = sw.load_accounts()?;
     Ok(file
         .accounts
         .iter()
@@ -34,7 +30,7 @@ pub fn list<P: HostPaths + Copy, S: SecretStore>(
 pub fn current<P: HostPaths + Copy, S: SecretStore>(
     sw: &Switcher<P, S>,
 ) -> Result<Option<AccountMeta>> {
-    Ok(accounts(sw)?.active_meta().cloned())
+    Ok(sw.load_accounts()?.active_meta().cloned())
 }
 
 pub fn rename<P: HostPaths + Copy, S: SecretStore>(
@@ -42,10 +38,10 @@ pub fn rename<P: HostPaths + Copy, S: SecretStore>(
     query: &str,
     label: &str,
 ) -> Result<AccountMeta> {
-    let mut file = accounts(sw)?;
+    let mut file = sw.load_accounts()?;
     let uuid = file.resolve(query)?.uuid.clone();
     let meta = file.rename(&uuid, label)?;
-    sw.save_accounts_public(&file)?;
+    sw.save_accounts(&file)?;
     Ok(meta)
 }
 
@@ -58,10 +54,10 @@ pub fn remove<P: HostPaths + Copy, S: SecretStore>(
     sw: &Switcher<P, S>,
     query: &str,
 ) -> Result<AccountMeta> {
-    let mut file = accounts(sw)?;
+    let mut file = sw.load_accounts()?;
     let uuid = file.resolve(query)?.uuid.clone();
     let meta = file.remove(&uuid)?;
     sw.secrets().delete(&uuid)?;
-    sw.save_accounts_public(&file)?;
+    sw.save_accounts(&file)?;
     Ok(meta)
 }
