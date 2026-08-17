@@ -90,6 +90,21 @@ fn prune_keeps_only_the_newest_backups() {
 
     atomic::prune(&dir, "orig.json", 3).unwrap();
 
-    let remaining = std::fs::read_dir(&dir).unwrap().count();
-    assert_eq!(remaining, 3);
+    let mut remaining: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    remaining.sort();
+
+    // Identity, not just cardinality: the three highest-numbered (newest)
+    // backups must survive, not merely any three.
+    assert_eq!(
+        remaining,
+        vec![
+            "orig.json.002.bak".to_string(),
+            "orig.json.003.bak".to_string(),
+            "orig.json.004.bak".to_string(),
+        ]
+    );
 }
