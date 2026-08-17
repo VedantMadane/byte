@@ -84,28 +84,52 @@ fn report_sync(sync: &SyncOutcome) {
     }
 }
 
+/// Build `switch --json`'s payload. `pub` (like `resolve_add_failure`)
+/// specifically so its shape is directly testable without a keychain --
+/// see `tests/cli_run_test.rs`.
+///
+/// Includes `sync`: without it, a script has no way to learn that
+/// sync-back just wrote a previously unknown account's refresh token to
+/// the keychain (finding M3) -- the non-JSON path already reports this via
+/// `report_sync`, but `--json` skipped it entirely.
+pub fn switch_json(outcome: &SwitchOutcome) -> serde_json::Value {
+    serde_json::json!({
+        "switched_to": outcome.switched_to.label,
+        "uuid": outcome.switched_to.uuid,
+        "already_active": outcome.already_active,
+        "sync": sync_json(&outcome.sync),
+    })
+}
+
+fn sync_json(sync: &SyncOutcome) -> serde_json::Value {
+    match sync {
+        SyncOutcome::Updated(meta) => {
+            serde_json::json!({"outcome": "updated", "label": meta.label, "uuid": meta.uuid})
+        }
+        SyncOutcome::Captured(meta) => {
+            serde_json::json!({"outcome": "captured", "label": meta.label, "uuid": meta.uuid})
+        }
+        SyncOutcome::LoggedOut => serde_json::json!({"outcome": "logged_out"}),
+    }
+}
+
 fn cmd_switch<P: HostPaths + Copy, S: SecretStore>(
     sw: &Switcher<P, S>,
     name: &str,
     json: bool,
 ) -> Result<()> {
+    let outcome = sw.switch_to(name)?;
+
+    if json {
+        output::data(&switch_json(&outcome).to_string());
+        return Ok(());
+    }
+
     let SwitchOutcome {
         switched_to,
         sync,
         already_active,
-    } = sw.switch_to(name)?;
-
-    if json {
-        output::data(
-            &serde_json::json!({
-                "switched_to": switched_to.label,
-                "uuid": switched_to.uuid,
-                "already_active": already_active,
-            })
-            .to_string(),
-        );
-        return Ok(());
-    }
+    } = outcome;
 
     report_sync(&sync);
     if already_active {

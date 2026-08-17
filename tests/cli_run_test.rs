@@ -14,11 +14,74 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use byte::Error;
 use byte::claude::files::ClaudeFiles;
-use byte::cli::run::{cmd_add, resolve_add_failure};
-use byte::ops::switch::Switcher;
+use byte::cli::run::{cmd_add, resolve_add_failure, switch_json};
+use byte::ops::switch::{SwitchOutcome, Switcher, SyncOutcome};
 use byte::paths::{HostPaths, TestPaths};
+use byte::store::metadata::AccountMeta;
 use byte::store::secrets::MemoryStore;
 use serde_json::json;
+
+fn meta(uuid: &str, label: &str) -> AccountMeta {
+    AccountMeta {
+        uuid: uuid.to_string(),
+        label: label.to_string(),
+        email: None,
+        organization_name: None,
+        subscription_type: None,
+        added_at: "2026-01-01T00:00:00Z".to_string(),
+        last_used_at: None,
+    }
+}
+
+#[test]
+fn switch_json_reports_a_captured_sync_outcome() {
+    // Finding M3: `switch --json` silently dropped sync-back's outcome, so
+    // a script had no way to learn that sync-back just wrote a previously
+    // unknown account's refresh token to the keychain.
+    let outcome = SwitchOutcome {
+        switched_to: meta("target-uuid", "work"),
+        sync: SyncOutcome::Captured(meta("live-uuid", "personal")),
+        already_active: false,
+    };
+
+    let value = switch_json(&outcome);
+
+    assert_eq!(value["sync"]["outcome"], "captured");
+    assert_eq!(value["sync"]["uuid"], "live-uuid");
+    assert_eq!(value["sync"]["label"], "personal");
+    assert_eq!(value["switched_to"], "work");
+    assert_eq!(value["already_active"], false);
+}
+
+#[test]
+fn switch_json_reports_an_updated_sync_outcome() {
+    let outcome = SwitchOutcome {
+        switched_to: meta("target-uuid", "work"),
+        sync: SyncOutcome::Updated(meta("target-uuid", "work")),
+        already_active: true,
+    };
+
+    let value = switch_json(&outcome);
+
+    assert_eq!(value["sync"]["outcome"], "updated");
+    assert_eq!(value["already_active"], true);
+}
+
+#[test]
+fn switch_json_reports_a_logged_out_sync_outcome_without_an_account() {
+    let outcome = SwitchOutcome {
+        switched_to: meta("target-uuid", "work"),
+        sync: SyncOutcome::LoggedOut,
+        already_active: false,
+    };
+
+    let value = switch_json(&outcome);
+
+    assert_eq!(value["sync"]["outcome"], "logged_out");
+    // LoggedOut carries no account -- confirm sync_json doesn't fabricate a
+    // uuid/label field for it the way the other two variants have.
+    assert!(value["sync"].get("uuid").is_none());
+}
 
 #[test]
 fn reports_the_original_cause_when_the_restore_succeeds() {
