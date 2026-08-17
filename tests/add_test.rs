@@ -1,9 +1,32 @@
 use byte::claude::files::ClaudeFiles;
+use byte::claude::snapshot::AccountSnapshot;
 use byte::ops::add::AddSession;
 use byte::ops::switch::Switcher;
 use byte::paths::{HostPaths, TestPaths};
 use byte::store::secrets::{MemoryStore, SecretStore};
 use serde_json::json;
+
+/// A store that accepts every write but can never read one back --
+/// simulates `begin`'s recoverability check failing even though
+/// `capture_current`'s own `put` reported success. Exists to prove that
+/// check actually gates `clear()`, not just that the end state looks right:
+/// `MemoryStore` can never diverge between a `put` and the following `get`,
+/// so no test built on it alone can tell the check apart from its absence.
+struct UnreadableStore;
+
+impl SecretStore for UnreadableStore {
+    fn put(&self, _uuid: &str, _snapshot: &AccountSnapshot) -> byte::Result<()> {
+        Ok(())
+    }
+
+    fn get(&self, _uuid: &str) -> byte::Result<Option<AccountSnapshot>> {
+        Ok(None)
+    }
+
+    fn delete(&self, _uuid: &str) -> byte::Result<()> {
+        Ok(())
+    }
+}
 
 fn login_as(tp: &TestPaths, uuid: &str, email: &str, refresh: &str) {
     std::fs::write(
@@ -126,6 +149,23 @@ fn begin_aborts_rather_than_logging_out_an_unidentifiable_live_account() {
         creds["claudeAiOauth"]["refreshToken"],
         json!("irreplaceable")
     );
+}
+
+#[test]
+fn begin_refuses_to_clear_when_the_store_cannot_read_back_what_it_wrote() {
+    let tp = TestPaths::new().unwrap();
+    login_as(&tp, "u1", "a@example.com", "r1");
+    let sw = Switcher::new(&tp, UnreadableStore);
+
+    let err = AddSession::begin(&sw).unwrap_err();
+
+    assert!(matches!(err, byte::Error::InvalidSnapshot { .. }));
+    // The one assertion that actually matters: clear() must never have run.
+    // An implementation that errored AFTER clearing would still satisfy the
+    // assertion above, so this checks the live files directly rather than
+    // just the returned error.
+    let live = ClaudeFiles::new(&tp).capture().unwrap().unwrap();
+    assert_eq!(live.email(), Some("a@example.com"));
 }
 
 #[test]
