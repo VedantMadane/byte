@@ -47,3 +47,21 @@ fn deleting_something_absent_is_not_an_error() {
     let store = MemoryStore::new();
     assert!(store.delete("missing").is_ok());
 }
+
+#[test]
+fn accounts_are_stored_independently_by_uuid() {
+    let store = MemoryStore::new();
+    store.put("u1", &snap("r1")).unwrap();
+    store.put("u2", &snap("r2")).unwrap();
+
+    // Each uuid must return its own snapshot, not just *a* snapshot — a store
+    // that kept a single shared slot and ignored the uuid key would still
+    // pass an `is_some()`-only check here.
+    assert_eq!(store.get("u1").unwrap(), Some(snap("r1")));
+    assert_eq!(store.get("u2").unwrap(), Some(snap("r2")));
+
+    store.delete("u1").unwrap();
+
+    assert_eq!(store.get("u1").unwrap(), None);
+    assert_eq!(store.get("u2").unwrap(), Some(snap("r2")));
+}

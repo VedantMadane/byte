@@ -251,3 +251,37 @@ fn validate_accepts_a_well_formed_snapshot() {
     );
     assert!(snap.validate().is_ok());
 }
+
+#[test]
+fn account_snapshot_survives_a_json_round_trip() {
+    // `KeyringStore` is the only place that actually serializes an
+    // `AccountSnapshot` (its `MemoryStore` test double stores clones, not
+    // JSON) — so this is the only test that exercises the exact code path
+    // real users depend on. Nested, multi-key oauth/account objects so a
+    // dropped or renamed field would be caught, not masked by an empty value.
+    let original = AccountSnapshot::new(
+        json!({
+            "accessToken": "access-1",
+            "refreshToken": "refresh-1",
+            "expiresAt": 1234567890i64,
+            "scopes": ["a", "b"],
+            "subscriptionType": "max"
+        }),
+        json!({
+            "accountUuid": "uuid-1",
+            "emailAddress": "a@example.com",
+            "organizationName": "Test Org",
+            "organizationUuid": "org-uuid-1"
+        }),
+        Some("user-1".to_string()),
+    );
+
+    let text = serde_json::to_string(&original).unwrap();
+    let restored: AccountSnapshot = serde_json::from_str(&text).unwrap();
+
+    assert_eq!(restored.schema, original.schema);
+    assert_eq!(restored.oauth, original.oauth);
+    assert_eq!(restored.account, original.account);
+    assert_eq!(restored.user_id, original.user_id);
+    assert_eq!(restored, original);
+}
