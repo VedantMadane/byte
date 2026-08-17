@@ -86,15 +86,23 @@ impl AccountsFile {
         Ok(())
     }
 
-    /// Insert or refresh the entry for a snapshot's account, returning the
-    /// stored metadata. A label the user set with `rename` is preserved.
-    pub fn upsert_from(&mut self, snapshot: &AccountSnapshot) -> AccountMeta {
-        let uuid = snapshot.identity().unwrap_or("unknown").to_string();
-
+    /// Insert or refresh the entry for `uuid`, returning the stored
+    /// metadata. A label the user set with `rename` is preserved.
+    ///
+    /// Takes `uuid` explicitly rather than deriving it from `snapshot` and
+    /// falling back to the literal string `"unknown"` when identity is
+    /// absent. Every current call site already has a validated identity in
+    /// hand (from `AccountSnapshot::validate()`, or a `resolve()`d existing
+    /// account), so the fallback was always dead code -- but it is the same
+    /// hazard class as the credential-loss family: a future caller that
+    /// upserts before validating would file that snapshot under the shared
+    /// key `"unknown"`, silently colliding with any other unidentifiable
+    /// account filed the same way.
+    pub fn upsert_from(&mut self, uuid: &str, snapshot: &AccountSnapshot) -> AccountMeta {
         let existing = self.accounts.iter().position(|a| a.uuid == uuid);
 
         let meta = AccountMeta {
-            uuid: uuid.clone(),
+            uuid: uuid.to_string(),
             label: match existing {
                 Some(i) => self.accounts[i].label.clone(),
                 None => snapshot.default_label(),

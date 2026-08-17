@@ -77,7 +77,7 @@ impl<P: HostPaths + Copy, S: SecretStore> Switcher<P, S> {
             .to_string();
 
         let mut accounts = self.load_accounts()?;
-        let meta = accounts.upsert_from(&snapshot);
+        let meta = accounts.upsert_from(&uuid, &snapshot);
         accounts.set_active(&uuid);
 
         self.secrets.put(&uuid, &snapshot)?;
@@ -129,7 +129,7 @@ impl<P: HostPaths + Copy, S: SecretStore> Switcher<P, S> {
         let mut accounts = self.load_accounts()?;
         let known = accounts.accounts.iter().any(|a| a.uuid == uuid);
 
-        let meta = accounts.upsert_from(&snapshot);
+        let meta = accounts.upsert_from(&uuid, &snapshot);
         self.secrets.put(&uuid, &snapshot)?;
         self.save_accounts(&accounts)?;
 
@@ -178,7 +178,7 @@ impl<P: HostPaths + Copy, S: SecretStore> Switcher<P, S> {
 
         self.files().apply(&snapshot)?;
 
-        accounts.upsert_from(&snapshot);
+        accounts.upsert_from(&target_uuid, &snapshot);
         accounts.set_active(&target_uuid);
         self.save_accounts(&accounts)?;
 
