@@ -1,3 +1,4 @@
+use byte::Error;
 use byte::claude::snapshot::AccountSnapshot;
 use byte::paths::{HostPaths, TestPaths};
 use byte::store::metadata::AccountsFile;
@@ -57,7 +58,10 @@ fn resolve_is_case_insensitive() {
 #[test]
 fn resolve_reports_an_unknown_name() {
     let file = AccountsFile::default();
-    assert!(file.resolve("nobody").is_err());
+    assert!(matches!(
+        file.resolve("nobody"),
+        Err(Error::NoSuchAccount(_))
+    ));
 }
 
 #[test]
@@ -66,7 +70,10 @@ fn resolve_reports_ambiguity_rather_than_guessing() {
     file.upsert_from(&snap("aaa111", "x@example.com"));
     file.upsert_from(&snap("aaa222", "y@example.com"));
 
-    assert!(file.resolve("aaa").is_err());
+    assert!(matches!(
+        file.resolve("aaa"),
+        Err(Error::AmbiguousAccount { count: 2, .. })
+    ));
 }
 
 #[test]
@@ -107,6 +114,8 @@ fn accounts_survive_a_save_and_load_cycle() {
 
     assert_eq!(loaded.accounts.len(), 1);
     assert_eq!(loaded.active.as_deref(), Some("u1"));
+    assert_eq!(loaded.accounts[0].uuid, "u1");
+    assert_eq!(loaded.accounts[0].label, "a@example.com");
     assert_eq!(loaded.accounts[0].email.as_deref(), Some("a@example.com"));
 }
 
