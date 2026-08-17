@@ -5,6 +5,7 @@ pub mod claude;
 pub mod error;
 pub mod output;
 pub mod paths;
+pub mod store;
 
 pub use error::{Error, Result};
 
