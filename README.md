@@ -7,42 +7,95 @@ claude account switcher
 
 ## Why?
 
-- _Add 3–5 concrete value propositions here._
-- _Each bullet should describe a tangible benefit, not a feature._
-- _Aim for the reader to know in 30 seconds whether this is for them._
-
+- Switch between a personal and a work Claude account without logging out
+  through the browser and back in again every time.
+- Credentials live in your OS's credential store (Windows Credential Manager,
+  macOS Keychain, or a Linux Secret Service provider), not a plaintext file.
+- Only the account identity is swapped. Settings, project history, plugins,
+  and MCP server tokens are shared across accounts and never touched.
+- Every write is backed up first, replaced atomically, and verified
+  afterward, so a crash mid-switch can't corrupt `~/.claude.json`.
+- Scriptable: every command accepts `--json` for machine-readable output.
 
 ## Prerequisites
 
-- _List runtime and dev dependencies with explicit version bounds._
+- Rust 1.88 or later (edition 2024) to build from source — see
+  [`rust-toolchain.toml`](rust-toolchain.toml).
+- [Claude Code](https://claude.com/claude-code) installed and already logged
+  in as at least one account. `byte` reads Claude Code's own credential
+  files; it does not perform the OAuth login itself.
+- An OS credential store: Windows Credential Manager, the macOS login
+  Keychain, or a Secret Service provider on Linux (e.g. GNOME Keyring or
+  KWallet).
 
 ## Install
 
 ```sh
-# end-to-end install command goes here
+cargo install --path .
 ```
 
 ## Quick start
 
 ```sh
-# minimal runnable example
+# Save the account you're currently logged in as
+byte capture
+
+# Log out, log in as a second account, and save it too
+byte add
+
+# Optional: accounts are labeled by email by default — give them names you'll
+# actually type
+byte rename you@personal.example.com personal
+byte rename you@work.example.com work
+
+# Switch back and forth by label, email, or UUID prefix
+byte switch work
+byte switch personal
 ```
 
 ## Usage
 
-_Reference surface — commands, flags, API entry points._
+| Command | Description |
+|---|---|
+| `byte` / `byte list` | List stored accounts; the active one is marked with `*` |
+| `byte current` | Print the active account's label |
+| `byte switch <name>` | Switch to a stored account |
+| `byte capture` | Save the currently logged-in account |
+| `byte add [--timeout <secs>]` | Log out, then save the next account you log in as (default 300s) |
+| `byte remove <name>` | Forget a stored account |
+| `byte rename <name> <label>` | Change an account's display label |
+
+`<name>` matches a label, an email address, or an account UUID prefix. Every
+command accepts `--json` for machine-readable output on stdout; status
+messages always go to stderr, so `--json` output can be piped safely.
+
+See [`man/byte.md`](man/byte.md) for the full reference, or run `byte --help`.
 
 ## Configuration
 
-_Config file paths and key names._
+byte reads two environment variables:
+
+| Variable | Effect |
+|---|---|
+| `CLAUDE_CONFIG_DIR` | Overrides where Claude Code's `.claude.json` and `.credentials.json` are read from |
+| `BYTE_CONFIG_DIR` | Overrides byte's own config directory (`accounts.json`, `backups/`) |
+
+See [Configuration](docs/configuration.md) for default paths per platform and
+where credentials are stored in each OS keychain.
 
 ## Examples
 
-See [`examples/`](examples/) for runnable demos.
+See [`examples/`](examples/) for runnable demos, including
+`roundtrip_check`, which round-trips a real `.claude.json` through byte's
+JSON writer and diffs the result — useful for confirming byte preserves a
+file it hasn't seen before.
 
 ## Troubleshooting
 
-_Common failure modes and fixes._
+byte never writes over a file it could not parse, and every write is backed
+up first — if a switch leaves things looking wrong, your previous file is in
+`<config-dir>/backups/`. See [Troubleshooting](docs/troubleshooting.md) for
+the full error reference.
 
 ## Documentation
 

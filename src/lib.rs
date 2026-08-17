@@ -2,6 +2,7 @@
 
 pub mod atomic;
 pub mod claude;
+pub mod cli;
 pub mod error;
 pub mod ops;
 pub mod output;

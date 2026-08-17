@@ -30,3 +30,9 @@ pub fn header(msg: &str) {
 pub fn error(msg: &str) {
     let _ = writeln!(std::io::stderr(), "✗  {msg}");
 }
+
+/// Machine-readable output. This is the only helper that writes to stdout,
+/// so `--json` can be piped without status messages contaminating it.
+pub fn data(text: &str) {
+    let _ = writeln!(std::io::stdout(), "{text}");
+}
