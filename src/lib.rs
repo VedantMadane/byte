@@ -2,6 +2,7 @@
 
 pub mod error;
 pub mod output;
+pub mod paths;
 
 pub use error::{Error, Result};
 
