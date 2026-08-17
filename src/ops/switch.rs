@@ -45,6 +45,11 @@ impl<P: HostPaths + Copy, S: SecretStore> Switcher<P, S> {
         ClaudeFiles::new(self.paths)
     }
 
+    /// Exposed for the add flow, which needs direct file access.
+    pub fn files_for_add(&self) -> ClaudeFiles<P> {
+        self.files()
+    }
+
     fn load_accounts(&self) -> Result<AccountsFile> {
         AccountsFile::load(&self.paths.accounts_file())
     }
