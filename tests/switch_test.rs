@@ -86,6 +86,16 @@ fn capture_current_stores_only_the_oauth_block_in_the_secret_store() {
         stored.get("emailAddress").is_none(),
         "the secret store must never receive account fields: {stored}"
     );
+    // The two checks above alone are narrower than this test's name: a
+    // regression to the original bug's exact shape -- put(&uuid,
+    // &serde_json::to_value(&snapshot)) instead of put(&uuid,
+    // &snapshot.oauth) -- nests accountUuid/emailAddress under a top-level
+    // "account" key rather than exposing them directly, so neither check
+    // above would fire. Check for the wrapper keys themselves too.
+    assert!(
+        stored.get("account").is_none() && stored.get("schema").is_none(),
+        "the secret store must never receive the whole snapshot: {stored}"
+    );
 }
 
 #[test]
