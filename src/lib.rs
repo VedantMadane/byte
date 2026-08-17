@@ -1,5 +1,6 @@
 //! byte — claude account switcher
 
+pub mod atomic;
 pub mod error;
 pub mod output;
 pub mod paths;
