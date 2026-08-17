@@ -6,8 +6,8 @@ use crate::ops::add::AddSession;
 use crate::ops::manage::{self, AccountListing};
 use crate::ops::switch::{SwitchOutcome, Switcher, SyncOutcome};
 use crate::output;
-use crate::paths::RealPaths;
-use crate::store::secrets::KeyringStore;
+use crate::paths::{HostPaths, RealPaths};
+use crate::store::secrets::{KeyringStore, SecretStore};
 
 /// How often the add flow checks for a completed login.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
@@ -39,7 +39,7 @@ fn listing_json(l: &AccountListing) -> serde_json::Value {
     })
 }
 
-fn cmd_list(sw: &Switcher<&RealPaths, KeyringStore>, json: bool) -> Result<()> {
+fn cmd_list<P: HostPaths + Copy, S: SecretStore>(sw: &Switcher<P, S>, json: bool) -> Result<()> {
     let listing = manage::list(sw)?;
 
     if json {
@@ -64,7 +64,7 @@ fn cmd_list(sw: &Switcher<&RealPaths, KeyringStore>, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_current(sw: &Switcher<&RealPaths, KeyringStore>, json: bool) -> Result<()> {
+fn cmd_current<P: HostPaths + Copy, S: SecretStore>(sw: &Switcher<P, S>, json: bool) -> Result<()> {
     match manage::current(sw)? {
         Some(meta) if json => {
             output::data(&serde_json::json!({"label": meta.label, "uuid": meta.uuid}).to_string());
@@ -82,7 +82,11 @@ fn report_sync(sync: &SyncOutcome) {
     }
 }
 
-fn cmd_switch(sw: &Switcher<&RealPaths, KeyringStore>, name: &str, json: bool) -> Result<()> {
+fn cmd_switch<P: HostPaths + Copy, S: SecretStore>(
+    sw: &Switcher<P, S>,
+    name: &str,
+    json: bool,
+) -> Result<()> {
     let SwitchOutcome {
         switched_to,
         sync,
@@ -113,7 +117,7 @@ fn cmd_switch(sw: &Switcher<&RealPaths, KeyringStore>, name: &str, json: bool) -
     Ok(())
 }
 
-fn cmd_capture(sw: &Switcher<&RealPaths, KeyringStore>, json: bool) -> Result<()> {
+fn cmd_capture<P: HostPaths + Copy, S: SecretStore>(sw: &Switcher<P, S>, json: bool) -> Result<()> {
     let meta = sw.capture_current()?;
     if json {
         output::data(&serde_json::json!({"captured": meta.label}).to_string());
@@ -123,7 +127,17 @@ fn cmd_capture(sw: &Switcher<&RealPaths, KeyringStore>, json: bool) -> Result<()
     Ok(())
 }
 
-fn cmd_add(sw: &Switcher<&RealPaths, KeyringStore>, timeout: u64, json: bool) -> Result<()> {
+/// `pub` (like `resolve_add_failure`) specifically so its wiring -- does it
+/// call `abort()` before reporting a `poll_once` failure, does the poll loop
+/// terminate and reach the timeout path -- is directly testable against a
+/// `MemoryStore` rather than only through the compiled binary, which would
+/// require a real keychain (`capture_current` unconditionally calls
+/// `secrets.put`). See `tests/cli_run_test.rs`.
+pub fn cmd_add<P: HostPaths + Copy, S: SecretStore>(
+    sw: &Switcher<P, S>,
+    timeout: u64,
+    json: bool,
+) -> Result<()> {
     let session = AddSession::begin(sw)?;
 
     output::status("Claude Code is now logged out.");
@@ -192,7 +206,11 @@ pub fn resolve_add_failure(cause: Error, restore_result: Result<()>) -> Result<(
     }
 }
 
-fn cmd_remove(sw: &Switcher<&RealPaths, KeyringStore>, name: &str, json: bool) -> Result<()> {
+fn cmd_remove<P: HostPaths + Copy, S: SecretStore>(
+    sw: &Switcher<P, S>,
+    name: &str,
+    json: bool,
+) -> Result<()> {
     let meta = manage::remove(sw, name)?;
     if json {
         output::data(&serde_json::json!({"removed": meta.label}).to_string());
@@ -202,8 +220,8 @@ fn cmd_remove(sw: &Switcher<&RealPaths, KeyringStore>, name: &str, json: bool) -
     Ok(())
 }
 
-fn cmd_rename(
-    sw: &Switcher<&RealPaths, KeyringStore>,
+fn cmd_rename<P: HostPaths + Copy, S: SecretStore>(
+    sw: &Switcher<P, S>,
     name: &str,
     label: &str,
     json: bool,

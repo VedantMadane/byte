@@ -9,8 +9,16 @@
 //! broken (a bare `?` that skipped recovery entirely on a `poll_once`
 //! error).
 
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use byte::Error;
-use byte::cli::run::resolve_add_failure;
+use byte::claude::files::ClaudeFiles;
+use byte::cli::run::{cmd_add, resolve_add_failure};
+use byte::ops::switch::Switcher;
+use byte::paths::{HostPaths, TestPaths};
+use byte::store::secrets::MemoryStore;
+use serde_json::json;
 
 #[test]
 fn reports_the_original_cause_when_the_restore_succeeds() {
@@ -39,4 +47,99 @@ fn distinguishes_a_poll_error_cause_from_a_timeout_cause() {
     let result = resolve_add_failure(Error::NotLoggedIn, Ok(()));
 
     assert!(matches!(result, Err(Error::NotLoggedIn)));
+}
+
+fn login_as(tp: &TestPaths, uuid: &str, email: &str, refresh: &str) {
+    std::fs::write(
+        tp.claude_credentials(),
+        serde_json::to_string(&json!({
+            "claudeAiOauth": {
+                "accessToken": "a", "refreshToken": refresh, "expiresAt": 1i64
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        tp.claude_config(),
+        serde_json::to_string_pretty(&json!({
+            "oauthAccount": {"accountUuid": uuid, "emailAddress": email},
+            "userID": "uid"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+/// A `HostPaths` that corrupts `.claude.json` the moment it is asked for
+/// that path for the third time, then "finishes the write" (heals it) on
+/// the fourth -- timed to land on `cmd_add`'s first `poll_once` call (calls
+/// 1 and 2 are `AddSession::begin`'s own `capture_current` and `clear`),
+/// simulating catching Claude Code mid-write without needing real
+/// concurrency. Mirrors the corrupt-then-fix sequence
+/// `tests/add_test.rs::poll_failure_does_not_prevent_recovering_the_previous_account`
+/// drives by hand; this drives it through the real `cmd_add`, end to end.
+struct FlakyPaths<'a> {
+    inner: &'a TestPaths,
+    claude_config_calls: AtomicU32,
+}
+
+impl HostPaths for FlakyPaths<'_> {
+    fn claude_config(&self) -> PathBuf {
+        let n = self.claude_config_calls.fetch_add(1, Ordering::SeqCst);
+        let path = self.inner.claude_config();
+        if n == 2 {
+            std::fs::write(&path, "{ not valid json").unwrap();
+        } else if n == 3 {
+            // The interrupted write completes a moment later, same as it
+            // would in reality -- this models Claude Code's own write
+            // finishing, not byte fixing anything.
+            std::fs::write(&path, "{}").unwrap();
+        }
+        path
+    }
+
+    fn claude_credentials(&self) -> PathBuf {
+        self.inner.claude_credentials()
+    }
+
+    fn byte_config_dir(&self) -> PathBuf {
+        self.inner.byte_config_dir()
+    }
+}
+
+#[test]
+fn cmd_add_restores_the_previous_account_when_poll_once_fails() {
+    // Finding I8: the CLI layer's wiring around cmd_add -- does it call
+    // abort() before reporting a poll_once failure, does the poll loop
+    // terminate -- had zero automated coverage, because every cmd_*
+    // function was concretely typed over KeyringStore, forcing a real
+    // keychain write to reach it at all. Now that they're generic over
+    // `S: SecretStore`, this drives the real `cmd_add` end to end against a
+    // `MemoryStore`, reproducing the shape of the original task-11 Finding
+    // F26 bug it guards against: a `poll_once` failure must not leave the
+    // user logged out with no attempt to recover.
+    let tp = TestPaths::new().unwrap();
+    login_as(&tp, "u1", "a@example.com", "r1");
+    let paths = FlakyPaths {
+        inner: &tp,
+        claude_config_calls: AtomicU32::new(0),
+    };
+    let sw = Switcher::new(&paths, MemoryStore::new());
+
+    let result = cmd_add(&sw, 300, false);
+
+    // The poll_once error (Error::Parse, from the corrupted .claude.json)
+    // is what must be reported -- proving cmd_add actually observed the
+    // failure, rather than looping past it or hanging until the 300s
+    // timeout this test would otherwise be at the mercy of.
+    assert!(
+        matches!(result, Err(Error::Parse { .. })),
+        "expected the poll_once Parse error to propagate, got: {result:?}"
+    );
+
+    // The property that actually matters: abort() ran and put u1 back as
+    // the live account, so the user is not left logged out.
+    let restored = ClaudeFiles::new(&paths).capture().unwrap().unwrap();
+    assert_eq!(restored.email(), Some("a@example.com"));
 }
