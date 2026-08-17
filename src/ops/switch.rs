@@ -41,6 +41,16 @@ impl<P: HostPaths + Copy, S: SecretStore> Switcher<P, S> {
         &self.secrets
     }
 
+    pub fn paths(&self) -> &P {
+        &self.paths
+    }
+
+    /// Exposed for `ops::manage`, which needs to save metadata-only edits
+    /// (rename, remove) without going through a capture or switch.
+    pub fn save_accounts_public(&self, file: &AccountsFile) -> Result<()> {
+        self.save_accounts(file)
+    }
+
     fn files(&self) -> ClaudeFiles<P> {
         ClaudeFiles::new(self.paths)
     }
