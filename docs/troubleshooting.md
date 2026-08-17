@@ -46,7 +46,9 @@ kept.
 Most failures (parse errors, verification failures) are handled
 automatically and don't need a manual restore. If you do need one — for
 example after an `ApplyRollbackFailed` error, or if a switch just looks
-wrong — copy the most recent relevant backup back over the live file:
+wrong — copy the most recent relevant backup back over the live file. The
+examples below assume `BYTE_CONFIG_DIR` is set; if you rely on the platform
+default instead, substitute the path from [Configuration](configuration.md).
 
 ```sh
 # Example: restore .claude.json on Linux/macOS
