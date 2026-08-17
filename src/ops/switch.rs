@@ -161,7 +161,20 @@ impl<P: HostPaths + Copy, S: SecretStore> Switcher<P, S> {
         snapshot.validate()?;
 
         let mut accounts = self.load_accounts()?;
-        let already_active = accounts.active.as_deref() == Some(target_uuid.as_str());
+
+        // Derived from the identity `sync_back` just confirmed live, not
+        // `accounts.active` -- `sync_back` never updates that pointer, so it
+        // can be stale relative to what Claude Code is actually
+        // authenticated as right now (e.g. the user ran `/logout` and logged
+        // in as a different account directly, bypassing byte entirely). A
+        // stale pointer would report `already_active: true` for a switch
+        // that in fact just changed the live account, which also suppresses
+        // the "sessions must be restarted" warning below -- so `switch_to`
+        // would tell the user nothing happened at all when something did.
+        let already_active = match &sync {
+            SyncOutcome::Updated(meta) | SyncOutcome::Captured(meta) => meta.uuid == target_uuid,
+            SyncOutcome::LoggedOut => false,
+        };
 
         self.files().apply(&snapshot)?;
 

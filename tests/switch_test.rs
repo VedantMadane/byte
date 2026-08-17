@@ -282,6 +282,34 @@ fn switching_to_the_active_account_is_a_no_op_that_still_syncs() {
 }
 
 #[test]
+fn already_active_reflects_the_live_account_not_a_stale_active_pointer() {
+    // Finding I2: `accounts.active` is only ever updated by switch_to and
+    // capture_current -- sync_back never touches it. So if the user logs
+    // out of Claude Code and back in as a different account directly
+    // (bypassing byte entirely), `accounts.active` still names whichever
+    // account byte last switched to, even though it is no longer live.
+    // already_active must reflect reality, not that stale pointer -- it
+    // also gates the "sessions must be restarted" warning, so getting this
+    // wrong tells the user nothing happened when a switch just did.
+    let tp = TestPaths::new().unwrap();
+    login_as(&tp, "u1", "a@example.com", "r1");
+    let sw = Switcher::new(&tp, MemoryStore::new());
+    sw.capture_current().unwrap(); // accounts.active = u1
+
+    // u2 logs in directly, without going through byte, so byte never
+    // captures it and accounts.active stays "u1".
+    login_as(&tp, "u2", "b@example.com", "r2");
+
+    let out = sw.switch_to("a@example.com").unwrap();
+
+    assert!(
+        !out.already_active,
+        "u2 is live, not u1 -- switching to u1 must not be reported as a no-op"
+    );
+    assert_eq!(live_refresh(&tp), "r1");
+}
+
+#[test]
 fn switching_to_an_unknown_account_fails_without_touching_the_files() {
     let tp = TestPaths::new().unwrap();
     login_as(&tp, "u1", "a@example.com", "r1");
