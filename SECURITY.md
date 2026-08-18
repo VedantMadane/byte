@@ -27,3 +27,70 @@ reporter and credit them in the release notes (unless they request otherwise).
 In scope: any vulnerability in the published release of byte.
 Out of scope: vulnerabilities in third-party dependencies (please report those
 upstream).
+
+## Threat model
+
+byte stores each account's OAuth refresh token in the OS credential store
+(Windows Credential Manager, the macOS login Keychain, or a Linux Secret
+Service provider) so it can switch accounts without repeating a browser
+login. These are live credentials, and the honest framing is this: **anyone
+who can run code as the logged-in user can read them.**
+
+That is not a new exposure byte introduces for the credential store copy
+specifically: it is equally true today of Claude Code's own credential file,
+`~/.claude/.credentials.json`, which is the source byte copies those tokens
+from in the first place. But byte does hold a live refresh token in three
+places, not one, and the third has none of the other two's protection:
+
+1. `~/.claude/.credentials.json` — Claude Code's own file.
+2. The OS credential store — one entry per account byte has stored, under
+   the service name `byte-claude-account-switcher`.
+3. `<byte-config-dir>/backups/` — a **plaintext file**, refresh token
+   included, written before every capture, switch, and add (see
+   [Configuration](docs/configuration.md)). The ten most recent generations
+   per file are kept, so more than one past refresh token can be recovered
+   from here even after it has been rotated or the account removed.
+
+Locations 1 and 2 are on equal footing: both rely on the same OS-level
+protections, and neither adds encryption beyond what the platform already
+provides for a logged-in user's own data — this is the "byte does not
+worsen that posture" claim, and it is true of those two. Location 3 is not
+on that footing: it is an ordinary file with ordinary filesystem
+permissions, with none of the OS credential store's access control, holding
+up to ten generations of history instead of one live copy. A local attacker
+able to run code as you can read a live refresh token from any of the
+three, and the backups directory is the easiest of the three to overlook.
+
+If your threat model includes a local attacker able to run arbitrary code as
+you, the correct response to a suspected compromise is the same regardless
+of which copy was read: revoke the affected account's session from your
+claude.ai account settings. `byte remove <name>` deletes byte's copy of the
+credential from the OS credential store and its metadata entry, but it does
+**not** clear that account's past backups in `backups/` — those age out only
+through the normal ten-generation pruning — and neither `byte remove` nor
+deleting `~/.claude/.credentials.json` revokes the token itself — only
+Anthropic's auth servers can do that.
+
+`accounts.json`, byte's own metadata file, holds each stored account's
+profile: email, organization name, billing type, organization role,
+subscription tier, the associated Claude Code `userID`, and the
+added/last-used timestamps — in effect, the non-secret `oauthAccount` object
+Claude Code stores per account, which byte copies in verbatim and opaque: it
+does not parse, type, or filter that object's fields, the same way it does
+not parse `claudeAiOauth` (see [Architecture](docs/architecture.md)). So the
+claim below is conditional, not something byte enforces by inspecting
+content: **byte itself never *writes* a credential into `accounts.json`**,
+because `accessToken`/`refreshToken` live only in `claudeAiOauth` and byte's
+own code never copies that object's fields into `oauthAccount`'s. It is not
+a claim that byte would notice or filter one out if Anthropic ever put a
+credential-shaped value inside `oauthAccount` itself — byte has no way to
+tell a credential apart from any other string in an object it treats as
+opaque. As things stand today, `oauthAccount` is profile and identity data,
+`accounts.json` never contains a token, and the credential store and the
+`backups/` directory do — so reading `accounts.json` alone (e.g. its
+contents ending up in a support bundle or backup) does not expose account
+credentials. That distinction matters more now than when `accounts.json`
+held only a handful of display fields, precisely because its inventory has
+grown to the full profile; the boundary that keeps it secret-free has not
+moved, but there is more non-secret data on the wrong side of a misreading
+of it than there used to be.
