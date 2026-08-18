@@ -10,9 +10,11 @@ claude account switcher
 - Switch between a personal and a work Claude account without logging out
   through the browser and back in again every time.
 - Credentials live in your OS's credential store (Windows Credential Manager,
-  macOS Keychain, or a Linux Secret Service provider). Pre-write backups are
-  plaintext, though — see [Security](SECURITY.md) for exactly where and for
-  how long.
+  macOS Keychain, or a Linux Secret Service provider). Only the OAuth tokens
+  go there — each account's profile (email, organization, billing type) sits
+  in byte's own `accounts.json`, which never holds a token. Pre-write backups
+  are plaintext, though — see [Security](SECURITY.md) for exactly where and
+  for how long.
 - Only the account identity is swapped. Settings, project history, plugins,
   and MCP server tokens are shared across accounts and never touched.
 - Every write is backed up first, replaced atomically, and verified
@@ -85,7 +87,7 @@ byte reads two environment variables:
 | `BYTE_CONFIG_DIR` | Overrides byte's own config directory (`accounts.json`, `backups/`) |
 
 See [Configuration](docs/configuration.md) for default paths per platform and
-where credentials are stored in each OS keychain.
+how a stored account is split between `accounts.json` and the OS keychain.
 
 ## Examples
 

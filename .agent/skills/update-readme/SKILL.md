@@ -47,6 +47,9 @@ description: "Use when README.md may be stale. Discovers commits since the last 
 | Installation instructions / package name | **Install** |
 | New supported platform or language | **Supported platforms** list |
 | License change | **License** section, badges |
+| `src/cli/mod.rs` (the clap `Command` enum and its `#[arg]` attributes) | **Usage** table — this is the authoritative list of subcommands and flags; diff it against the table row by row |
+| `src/store/secrets.rs`, `src/store/metadata.rs` (what is stored where) | **Why?** bullets, **Configuration** pointer |
+| `SECURITY.md` (claims about what sits in plaintext on disk) | **Why?** bullets — the README summarizes these and drifts when the inventory grows |
 
 Extend this table every time you find a new source-of-truth file that feeds the README.
 
@@ -72,4 +75,20 @@ After a run, improve this file in place:
 
 1. **Grow the mapping table** with any new source → README relationship you discovered.
 2. **Record patterns** for recurring edits.
+
+   Patterns found so far:
+
+   - `README.md` is **CRLF** in the working tree. Any scripted edit must
+     preserve that, or the diff becomes a whole-file rewrite that buries the
+     real change. Normalize the CR-LF pairs to bare LF before matching,
+     then restore CR-LF on write, and confirm with `git diff --stat` that
+     the insertion count matches the lines you actually meant to touch.
+   - A storage-layer refactor can leave every CLI surface accurate while
+     still making a **Why?** bullet wrong. Check the "what lives where"
+     claims, not just the command table, whenever `src/store/` changes.
+   - `make` is not available on the maintainer's Windows box; `cargo test`
+     is the equivalent of `make test` (see the `Makefile`). `oss-spec
+     validate` aborts before reporting when no agent CLI is on `PATH` —
+     that is an environment limitation, not a conformance failure, and must
+     be reported as such rather than glossed as "spec check passed".
 3. **Commit the skill edit** together with the README edit so the knowledge compounds.
