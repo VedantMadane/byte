@@ -1,4 +1,7 @@
-use byte::claude::detect::{FakeProbe, ProcessProbe, looks_like_claude_code};
+use byte::claude::detect::{
+    FakeProbe, ProcessProbe, is_claude_desktop_app, looks_like_claude_code,
+};
+use std::path::Path;
 
 #[test]
 fn a_fake_probe_reports_what_it_was_given() {
@@ -35,8 +38,13 @@ fn an_unrelated_node_process_is_not_recognised() {
 
 #[test]
 fn an_unrelated_binary_whose_name_merely_contains_claude_is_not_recognised() {
-    // "claude-desktop" is a different product; matching it would make the
-    // switch warning fire when nothing relevant is running.
+    // This name is hypothetical -- the real Anthropic Claude desktop app is
+    // not called "claude-desktop". It ships as `claude.exe` on Windows,
+    // sharing the exact CLI binary name, and is excluded by the probe's
+    // executable-path check (`is_claude_desktop_app`) rather than by this
+    // classifier. This case still earns its place: it guards against a
+    // classifier that matched by loose substring (e.g. `name.contains("claude")`)
+    // rather than the exact stem this function actually compares.
     assert!(!looks_like_claude_code(
         "claude-desktop.exe",
         &["claude-desktop.exe".into()]
@@ -70,4 +78,63 @@ fn an_electron_helper_process_sharing_the_claude_binary_name_is_not_recognised()
         "claude.exe",
         &["claude.exe".into(), "--type=gpu-process".into()]
     ));
+}
+
+#[test]
+fn a_claude_binary_with_ordinary_cli_flags_is_still_recognised() {
+    // The exclusion above is keyed on the `--type=` Electron/Chromium marker
+    // specifically, not on "carries more than one argv element". A real
+    // Claude Code invocation routinely carries several ordinary flags and
+    // must still classify as positive -- a classifier written as
+    // `argv.len() == 1` would wrongly exclude it while still passing every
+    // other case in this file.
+    assert!(looks_like_claude_code(
+        "claude.exe",
+        &[
+            "claude.exe".into(),
+            "--print".into(),
+            "--output-format=json".into()
+        ]
+    ));
+}
+
+#[test]
+fn the_desktop_apps_executable_path_is_recognised() {
+    // Both the Squirrel shim (directly under `AnthropicClaude\`) and the
+    // versioned app directory it launches (`AnthropicClaude\app-<version>\`)
+    // identify the desktop app -- see `is_claude_desktop_app`'s doc comment.
+    assert!(is_claude_desktop_app(Some(Path::new(
+        "C:\\Users\\x\\AppData\\Local\\AnthropicClaude\\app-1.46388.4\\claude.exe"
+    ))));
+    assert!(is_claude_desktop_app(Some(Path::new(
+        "C:\\Users\\x\\AppData\\Local\\AnthropicClaude\\claude.exe"
+    ))));
+}
+
+#[test]
+fn a_genuine_cli_installs_executable_path_is_not_the_desktop_app() {
+    assert!(!is_claude_desktop_app(Some(Path::new(
+        "C:\\Users\\x\\AppData\\Roaming\\Claude\\claude-code\\2.1.260\\claude.exe"
+    ))));
+    assert!(!is_claude_desktop_app(Some(Path::new(
+        "C:\\Users\\x\\.local\\bin\\claude.exe"
+    ))));
+}
+
+#[test]
+fn an_unavailable_executable_path_is_not_treated_as_the_desktop_app() {
+    // exe() returns None on some platforms/processes (permission or
+    // namespace restrictions can hide another process's path). Treating
+    // "unknown" as "exclude it" would silently suppress a real warning
+    // instead of a false one -- the worse failure mode -- so unknown must
+    // resolve to "not the desktop app" and stay counted.
+    assert!(!is_claude_desktop_app(None));
+}
+
+#[test]
+fn an_empty_executable_path_is_not_treated_as_the_desktop_app() {
+    // On Linux, exe() can return an empty path rather than None when
+    // /proc/<pid>/exe could not be read. The same "unknown stays counted"
+    // handling applies.
+    assert!(!is_claude_desktop_app(Some(Path::new(""))));
 }
