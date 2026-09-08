@@ -2,3 +2,4 @@
 
 pub mod events;
 pub mod menu;
+pub mod notify;
