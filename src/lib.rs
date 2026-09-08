@@ -9,6 +9,7 @@ pub mod ops;
 pub mod output;
 pub mod paths;
 pub mod store;
+pub mod tray;
 
 pub use error::{Error, Result};
 

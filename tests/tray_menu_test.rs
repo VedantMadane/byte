@@ -1,0 +1,134 @@
+use byte::ops::manage::AccountListing;
+use byte::store::metadata::AccountMeta;
+use byte::tray::menu::{MenuEntry, MenuModel};
+
+fn listing(uuid: &str, label: &str, org: Option<&str>, active: bool) -> AccountListing {
+    AccountListing {
+        meta: AccountMeta {
+            uuid: uuid.to_string(),
+            label: label.to_string(),
+            email: Some(format!("{label}@example.com")),
+            organization_name: org.map(str::to_string),
+            subscription_type: Some("max".to_string()),
+            account: serde_json::json!({"accountUuid": uuid}),
+            user_id: Some("uid".to_string()),
+            credential_schema: 1,
+            added_at: "2026-01-01T00:00:00Z".to_string(),
+            last_used_at: None,
+        },
+        active,
+    }
+}
+
+#[test]
+fn an_empty_store_offers_only_add_and_quit() {
+    let model = MenuModel::from_listing(&[]);
+    assert_eq!(
+        model.entries,
+        vec![MenuEntry::AddAccount, MenuEntry::Separator, MenuEntry::Quit]
+    );
+}
+
+#[test]
+fn accounts_render_by_label_not_email() {
+    // Users rename accounts; the menu must show what `byte list` shows.
+    let model = MenuModel::from_listing(&[listing("u1", "work", Some("Indicio"), true)]);
+    let MenuEntry::Account { label, detail, .. } = &model.entries[0] else {
+        panic!(
+            "first entry should be an account, got {:?}",
+            model.entries[0]
+        );
+    };
+    assert_eq!(label, "work");
+    assert_eq!(detail.as_deref(), Some("Indicio"));
+}
+
+#[test]
+fn exactly_the_active_account_is_marked() {
+    let model = MenuModel::from_listing(&[
+        listing("u1", "personal", None, false),
+        listing("u2", "work", None, true),
+    ]);
+    let marked: Vec<&str> = model
+        .entries
+        .iter()
+        .filter_map(|e| match e {
+            MenuEntry::Account {
+                uuid, active: true, ..
+            } => Some(uuid.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(marked, vec!["u2"], "only u2 should be marked active");
+}
+
+#[test]
+fn account_order_from_the_listing_is_preserved() {
+    let model = MenuModel::from_listing(&[
+        listing("u1", "alpha", None, false),
+        listing("u2", "beta", None, false),
+    ]);
+    let uuids: Vec<&str> = model
+        .entries
+        .iter()
+        .filter_map(|e| match e {
+            MenuEntry::Account { uuid, .. } => Some(uuid.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(uuids, vec!["u1", "u2"]);
+}
+
+#[test]
+fn a_separator_divides_accounts_from_the_actions() {
+    let model = MenuModel::from_listing(&[listing("u1", "work", None, true)]);
+    assert_eq!(
+        model.entries,
+        vec![
+            MenuEntry::Account {
+                uuid: "u1".to_string(),
+                label: "work".to_string(),
+                detail: None,
+                active: true,
+            },
+            MenuEntry::Separator,
+            MenuEntry::AddAccount,
+            MenuEntry::Separator,
+            MenuEntry::Quit,
+        ]
+    );
+}
+
+#[test]
+fn an_account_with_no_organization_has_no_detail_line() {
+    let model = MenuModel::from_listing(&[listing("u1", "solo", None, false)]);
+    let MenuEntry::Account { detail, .. } = &model.entries[0] else {
+        panic!("expected an account entry");
+    };
+    assert_eq!(*detail, None);
+}
+
+// The brief's tests above each look at accounts or the footer in isolation:
+// `account_order_from_the_listing_is_preserved` filters down to just the
+// `Account` entries and ignores everything else, so it would not notice a
+// footer that goes missing or malforms once there is more than one account
+// ahead of it. This test pins the exact tail shape with two accounts
+// present, so an implementation that only gets the footer right for the
+// single-account case (e.g. an off-by-one on `entries.len()`) cannot pass.
+#[test]
+fn the_footer_keeps_its_shape_with_more_than_one_account() {
+    let model = MenuModel::from_listing(&[
+        listing("u1", "alpha", None, false),
+        listing("u2", "beta", None, false),
+    ]);
+    assert_eq!(model.entries.len(), 6);
+    assert_eq!(
+        &model.entries[2..],
+        &[
+            MenuEntry::Separator,
+            MenuEntry::AddAccount,
+            MenuEntry::Separator,
+            MenuEntry::Quit,
+        ]
+    );
+}
