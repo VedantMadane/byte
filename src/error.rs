@@ -51,6 +51,9 @@ pub enum Error {
     #[error("secret store unavailable: {0}")]
     Secret(String),
 
+    #[error("tray error: {0}")]
+    Tray(String),
+
     #[error("failed to render JSON output: {0}")]
     Render(String),
 
