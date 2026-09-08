@@ -15,6 +15,9 @@ use byte::atomic;
 use byte::paths::{HostPaths, TestPaths};
 use byte::tray::watch::AccountsWatcher;
 
+/// How often the polling helpers below re-check their condition.
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
+
 /// Poll until `f` is true or the deadline passes. Filesystem events are
 /// inherently asynchronous; a fixed sleep would be either flaky or slow.
 fn wait_until(deadline: Duration, f: impl Fn() -> bool) -> bool {
@@ -23,9 +26,37 @@ fn wait_until(deadline: Duration, f: impl Fn() -> bool) -> bool {
         if f() {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(25));
+        std::thread::sleep(POLL_INTERVAL);
     }
     f()
+}
+
+/// Poll until `count` has held one value for `quiet`, then return it -- or
+/// whatever it reads once `deadline` passes, if it never settles.
+///
+/// One logical write produces a *burst* of OS events rather than exactly one,
+/// which is the whole reason [`AccountsWatcher::DEBOUNCE`] exists. A
+/// `wait_until` keyed on "fired at least once" therefore returns on the
+/// *first* event of a burst while its siblings are still in flight, so a
+/// count sampled at that instant is not final and will keep climbing on its
+/// own a few hundred microseconds later. A test that needs a stable baseline
+/// -- rather than just "it fired" -- has to let the burst drain first, or it
+/// races its own fixture rather than the behaviour it means to pin down.
+fn wait_until_settled(deadline: Duration, quiet: Duration, count: impl Fn() -> usize) -> usize {
+    let start = Instant::now();
+    let mut last = count();
+    let mut stable_since = Instant::now();
+    while start.elapsed() < deadline {
+        std::thread::sleep(POLL_INTERVAL);
+        let current = count();
+        if current != last {
+            last = current;
+            stable_since = Instant::now();
+        } else if stable_since.elapsed() >= quiet {
+            return current;
+        }
+    }
+    count()
 }
 
 /// Excludes a `start` that returns `Ok` but never actually installs a
@@ -92,9 +123,18 @@ fn the_callback_stops_after_the_watcher_is_dropped() {
         "the watcher never fired before being dropped"
     );
 
+    // The `wait_until` above returned on the *first* event of that write's
+    // burst, with the rest still in flight. Sampling `hits` right here would
+    // pin a baseline that then climbs on its own, failing the comparison
+    // below for a reason that has nothing to do with the drop. Let the burst
+    // drain to a stable value first; `DEBOUNCE` is the product's own
+    // statement of how long one logical write keeps producing events.
+    let before = wait_until_settled(Duration::from_secs(5), AccountsWatcher::DEBOUNCE, || {
+        hits.load(Ordering::SeqCst)
+    });
+
     drop(watcher);
 
-    let before = hits.load(Ordering::SeqCst);
     std::fs::write(tp.accounts_file(), r#"{"changed":true}"#).unwrap();
     // Proving an absence has no "poll until" condition to wait for, so give
     // the (now-stopped) watcher a real window to wrongly fire, then check.
