@@ -4,6 +4,7 @@ pub mod atomic;
 pub mod claude;
 pub mod cli;
 pub mod error;
+pub mod lock;
 pub mod ops;
 pub mod output;
 pub mod paths;

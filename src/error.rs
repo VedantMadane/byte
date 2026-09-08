@@ -86,6 +86,12 @@ pub enum Error {
 
     #[error("{action} needs confirmation; re-run with --yes to proceed without prompting")]
     ConfirmationRequired { action: String },
+
+    #[error(
+        "another byte process is currently changing accounts.\n\
+         Wait for it to finish and try again."
+    )]
+    Busy,
 }
 
 /// Convenience alias used throughout the crate.
