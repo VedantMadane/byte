@@ -29,3 +29,6 @@ sysinfo = "0.38.4"
 tempfile = "3.27.0"
 thiserror = "2.0.20"
 time = { version = "0.3.55", features = ["formatting", "parsing", "macros", "serde"] }
+
+[target.x86_64-pc-windows-msvc.dependencies]
+winreg = "0.56.0"
