@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use byte::atomic;
 use byte::paths::{HostPaths, TestPaths};
 use byte::tray::watch::AccountsWatcher;
 
@@ -103,5 +104,50 @@ fn the_callback_stops_after_the_watcher_is_dropped() {
         hits.load(Ordering::SeqCst),
         before,
         "a dropped watcher must not keep firing"
+    );
+}
+
+/// Excludes a regression from watching the directory to watching the file
+/// directly. Production writes to `accounts.json` go through
+/// [`byte::atomic::write`] (via `AccountsFile::save`, called from
+/// `ops::switch`), which creates a new temp file in the *same directory*
+/// and renames it onto the target -- swapping the inode rather than
+/// rewriting the old one in place. That inode swap is the entire reason
+/// `AccountsWatcher::start` watches the parent directory instead of the
+/// file: a `watcher.watch(&file, ...)` registration would instead follow
+/// the pre-rename inode on Linux and silently stop firing after exactly
+/// one such replace, ever again. `std::fs::write`, used by the other two
+/// tests in this file, truncates and rewrites the existing inode in place,
+/// so it cannot tell a correct directory-watch apart from that regression
+/// -- only a real rename onto the target can.
+#[test]
+fn an_atomic_replace_of_the_accounts_file_fires_the_callback() {
+    let tp = TestPaths::new().unwrap();
+    atomic::write(
+        &tp.accounts_file(),
+        br#"{"schema":2,"active":null,"accounts":[]}"#,
+    )
+    .unwrap();
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&hits);
+    let _watcher = AccountsWatcher::start(&tp, move || {
+        seen.fetch_add(1, Ordering::SeqCst);
+    })
+    .unwrap();
+
+    // The exact mechanism production code uses: a temp file created in the
+    // same directory, then renamed onto `accounts_file()`. This is what
+    // distinguishes this test from the other two, which only ever truncate
+    // and rewrite the pre-existing file in place.
+    atomic::write(
+        &tp.accounts_file(),
+        br#"{"schema":2,"active":"u1","accounts":[]}"#,
+    )
+    .unwrap();
+
+    assert!(
+        wait_until(Duration::from_secs(5), || hits.load(Ordering::SeqCst) > 0),
+        "the watcher never fired for an atomic replace (rename) onto the accounts file"
     );
 }

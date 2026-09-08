@@ -4,6 +4,7 @@
 //! every write goes through an atomic replace, a watcher never observes a torn
 //! file; the worst case is a briefly stale menu, never a wrong one.
 
+use std::ffi::OsStr;
 use std::path::Path;
 use std::time::Duration;
 
@@ -34,10 +35,36 @@ impl AccountsWatcher {
             source,
         })?;
 
-        let target = file.clone();
+        // Compare by file name, not the full path. `notify`'s FSEvents
+        // backend on macOS canonicalizes the watched root and reports event
+        // paths in canonical, symlink-resolved form: `/var`, `/tmp` and
+        // `/etc` are symlinks to `/private/var`, `/private/tmp` and
+        // `/private/etc`, and a config directory rooted under any of those
+        // (as `TestPaths`, backed by `tempfile::tempdir()`, always is on
+        // macOS -- it lands under `/var/folders/...`) reports events under
+        // `/private/var/folders/...` instead. Neither `RealPaths` nor
+        // `TestPaths` canonicalizes `accounts_file()`, so comparing full
+        // paths is false for every real event on macOS. The watch is
+        // already scoped to exactly one non-recursive directory, so a
+        // file-name comparison is sufficient and sidesteps ancestor-
+        // directory canonicalization entirely -- and it stays correct on
+        // Windows and Linux, where event paths are reported as given.
+        //
+        // `accounts_file()` always resolves to `<dir>/accounts.json`
+        // (see `HostPaths::accounts_file`'s default body), so `target_name`
+        // is always `Some` in practice. If some future `HostPaths` impl
+        // ever did return a nameless path (`/`, `C:\`), treat that as
+        // "never matches" rather than "matches every nameless path" --
+        // firing on unrelated directory-level events that also happen to
+        // lack a file name would be worse than never firing at all.
+        let target_name = file.file_name().map(OsStr::to_os_string);
+
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             let Ok(event) = res else { return };
-            if event.paths.iter().any(|p| p == &target) {
+            let Some(name) = target_name.as_deref() else {
+                return;
+            };
+            if event.paths.iter().any(|p| p.file_name() == Some(name)) {
                 on_change();
             }
         })
