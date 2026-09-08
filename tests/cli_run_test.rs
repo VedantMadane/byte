@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use byte::Error;
 use byte::claude::files::ClaudeFiles;
 use byte::claude::snapshot::SCHEMA_VERSION;
-use byte::cli::run::{cmd_add, resolve_add_failure, switch_json};
+use byte::cli::run::{cmd_add, resolve_add_failure, running_sessions_warning, switch_json};
 use byte::ops::switch::{SwitchOutcome, Switcher, SyncOutcome};
 use byte::paths::{HostPaths, TestPaths};
 use byte::store::metadata::AccountMeta;
@@ -85,6 +85,74 @@ fn switch_json_reports_a_logged_out_sync_outcome_without_an_account() {
     // LoggedOut carries no account -- confirm sync_json doesn't fabricate a
     // uuid/label field for it the way the other two variants have.
     assert!(value["sync"].get("uuid").is_none());
+}
+
+// `cmd_switch`'s success path needs a keychain (it is generic over
+// `SecretStore`, but the compiled binary always wires it to `KeyringStore`
+// via `run()`), so the running-sessions warning is asserted here at the
+// level of the pure message builder rather than by driving `cmd_switch` (or
+// the binary) end to end -- see the file header and
+// `running_sessions_warning`'s own doc comment.
+
+#[test]
+fn no_warning_when_nothing_is_running() {
+    assert_eq!(running_sessions_warning(0), None);
+}
+
+#[test]
+fn one_session_is_described_in_the_singular() {
+    let msg = running_sessions_warning(1).expect("a warning");
+    assert!(msg.contains('1'), "should name the count: {msg}");
+    assert!(!msg.contains("sessions"), "should be singular: {msg}");
+}
+
+#[test]
+fn several_sessions_are_described_in_the_plural() {
+    let msg = running_sessions_warning(3).expect("a warning");
+    assert!(msg.contains('3'), "should name the count: {msg}");
+    assert!(msg.contains("sessions"), "should be plural: {msg}");
+}
+
+// The three tests above pin count-formatting and singular/plural wording via
+// substring checks alone, which a sloppy (but technically passing) message
+// could still satisfy -- e.g. "1 thing needs attention" contains '1' and
+// omits "sessions" without saying anything useful. Pin the exact wording too
+// so a regression there (dropped restart instruction, wrong verb, mangled
+// punctuation) fails a test instead of shipping silently.
+#[test]
+fn one_session_message_is_worded_exactly() {
+    assert_eq!(
+        running_sessions_warning(1).as_deref(),
+        Some(
+            "1 running Claude Code session still uses the previous account. \
+             Restart it to pick up the switch."
+        )
+    );
+}
+
+#[test]
+fn plural_session_message_is_worded_exactly() {
+    assert_eq!(
+        running_sessions_warning(3).as_deref(),
+        Some(
+            "3 running Claude Code sessions still use the previous account. \
+             Restart them to pick up the switch."
+        )
+    );
+}
+
+// 3 alone leaves the singular/plural boundary at 2 unexercised -- the match
+// arm covering `n` starts at 2, not 3, so pin that boundary explicitly
+// rather than trusting it's covered by a test for a larger count.
+#[test]
+fn two_sessions_is_already_the_plural_boundary() {
+    assert_eq!(
+        running_sessions_warning(2).as_deref(),
+        Some(
+            "2 running Claude Code sessions still use the previous account. \
+             Restart them to pick up the switch."
+        )
+    );
 }
 
 #[test]

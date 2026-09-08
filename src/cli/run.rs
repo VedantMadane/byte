@@ -2,6 +2,7 @@
 
 use std::io::IsTerminal as _;
 
+use crate::claude::detect::{ProcessProbe, SysinfoProbe};
 use crate::cli::{Cli, Command};
 use crate::error::{Error, Result};
 use crate::ops::add::AddSession;
@@ -17,11 +18,12 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500)
 pub fn run(cli: Cli) -> Result<()> {
     let paths = RealPaths::discover()?;
     let switcher = Switcher::new(&paths, KeyringStore::new());
+    let probe = SysinfoProbe::new();
 
     match cli.command {
         None | Some(Command::List) => cmd_list(&switcher, cli.json),
         Some(Command::Current) => cmd_current(&switcher, cli.json),
-        Some(Command::Switch { name }) => cmd_switch(&switcher, &name, cli.json),
+        Some(Command::Switch { name }) => cmd_switch(&switcher, &name, cli.json, &probe),
         Some(Command::Capture) => cmd_capture(&switcher, cli.json),
         Some(Command::Add { timeout }) => cmd_add(&switcher, timeout, cli.json),
         Some(Command::Remove { name, yes }) => cmd_remove(&switcher, &name, yes, cli.json),
@@ -113,10 +115,33 @@ fn sync_json(sync: &SyncOutcome) -> serde_json::Value {
     }
 }
 
+/// The warning shown after a switch, or `None` when nothing is running.
+///
+/// Claude Code reads credentials at startup, so a session that is already
+/// running keeps the previous account until it restarts. `pub` (like
+/// `switch_json` and `resolve_add_failure`) specifically so this wording and
+/// its zero-count case are directly testable without a keychain -- see
+/// `tests/cli_run_test.rs`.
+pub fn running_sessions_warning(count: usize) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some(
+            "1 running Claude Code session still uses the previous account. \
+             Restart it to pick up the switch."
+                .to_string(),
+        ),
+        n => Some(format!(
+            "{n} running Claude Code sessions still use the previous account. \
+             Restart them to pick up the switch."
+        )),
+    }
+}
+
 fn cmd_switch<P: HostPaths + Copy, S: SecretStore>(
     sw: &Switcher<P, S>,
     name: &str,
     json: bool,
+    probe: &impl ProcessProbe,
 ) -> Result<()> {
     let outcome = sw.switch_to(name)?;
 
@@ -136,9 +161,9 @@ fn cmd_switch<P: HostPaths + Copy, S: SecretStore>(
         output::info(&format!("{} is already active.", switched_to.label));
     } else {
         output::status(&format!("Switched to {}", switched_to.label));
-        output::warn(
-            "Claude Code sessions already running keep the previous account until restarted.",
-        );
+        if let Some(msg) = running_sessions_warning(probe.running_claude_sessions()) {
+            output::warn(&msg);
+        }
     }
     Ok(())
 }
