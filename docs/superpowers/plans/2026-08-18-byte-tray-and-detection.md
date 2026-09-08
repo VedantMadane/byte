@@ -2120,7 +2120,7 @@ Expected: all pass.
 - `man/byte.md` — add `autostart enable|disable|status`; change the SYNOPSIS/DESCRIPTION so no-arguments starts the tray; add `Error::Busy` and any new tray error to the notes.
 - `README.md` — describe the tray (what the menu shows, that one instance runs at a time, that a CLI switch updates it), and autostart as opt-in.
 - `docs/configuration.md` — add `mutation.lock` and `tray.lock` to the config-directory table, and say where autostart registers per platform.
-- `docs/troubleshooting.md` — rows for `Error::Busy` and any new tray error; a note that the tray shows a notification for "Add account" rather than performing it, and why.
+- `docs/troubleshooting.md` — rows for `Error::Busy` and any new tray error; a note that the tray shows a notification for "Add account" rather than performing it, and why. **Also correct the "Sessions already running" entry**, which still says byte prints that warning unconditionally rather than detecting whether a session is running — Task 3 made it conditional, so that sentence is now false.
 - `docs/architecture.md` — add `tray/`, `lock.rs`, `autostart.rs`, `claude/detect.rs` to the module map, and state the dependency direction (`tray` sits beside `cli`, both above `ops`).
 - `AGENTS.md` — add the four tray constraints to the parity rules, so nobody rediscovers them.
 
