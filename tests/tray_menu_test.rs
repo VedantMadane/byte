@@ -45,9 +45,14 @@ fn accounts_render_by_label_not_email() {
 
 #[test]
 fn exactly_the_active_account_is_marked() {
+    // The active account sits in the middle -- neither first nor last --
+    // so this fails against an implementation that derives `active` from
+    // position (e.g. "mark whichever entry is last") instead of from
+    // `listing.active`.
     let model = MenuModel::from_listing(&[
         listing("u1", "personal", None, false),
         listing("u2", "work", None, true),
+        listing("u3", "side", None, false),
     ]);
     let marked: Vec<&str> = model
         .entries
@@ -64,9 +69,12 @@ fn exactly_the_active_account_is_marked() {
 
 #[test]
 fn account_order_from_the_listing_is_preserved() {
+    // `beta` precedes `alpha` here so insertion order and alphabetical
+    // order diverge (in both label and uuid) -- an implementation that
+    // sorted instead of preserving input order would fail this.
     let model = MenuModel::from_listing(&[
-        listing("u1", "alpha", None, false),
         listing("u2", "beta", None, false),
+        listing("u1", "alpha", None, false),
     ]);
     let uuids: Vec<&str> = model
         .entries
@@ -76,7 +84,7 @@ fn account_order_from_the_listing_is_preserved() {
             _ => None,
         })
         .collect();
-    assert_eq!(uuids, vec!["u1", "u2"]);
+    assert_eq!(uuids, vec!["u2", "u1"]);
 }
 
 #[test]
