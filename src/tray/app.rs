@@ -7,8 +7,19 @@
 //! 2. `exit()` does not stop callbacks immediately, so handlers are idempotent.
 //! 3. Menu and tray events arrive on global receivers rather than through
 //!    winit, so they are forwarded to the loop through an `EventLoopProxy`.
+//!    A registered `set_event_handler(Some(..))` and that event type's
+//!    `receiver()` are **mutually exclusive, not complementary**: both
+//!    `muda` and `tray-icon` implement delivery as "call the handler if one
+//!    is set, else push to the channel" (see each crate's `send()`), and
+//!    both document on `receiver()` that it stops receiving anything once a
+//!    handler is installed. `resumed()` below installs a handler for both
+//!    `MenuEvent` and `TrayIconEvent`, so those handlers are the *only*
+//!    place either event is ever seen from here on -- do not add a
+//!    `receiver()` drain back into `user_event`. It would compile, run, and
+//!    silently receive nothing, forever: that was the bug this file once had.
 //! 4. `TrayIconEvent` is a pointer stream: hovering emits `Move` continuously,
-//!    so non-clicks are dropped before any work happens.
+//!    so non-clicks are dropped inside the handler itself, before anything
+//!    is even sent through the channel.
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -33,9 +44,25 @@ use crate::tray::notify;
 use crate::tray::watch::AccountsWatcher;
 
 /// Something that woke the loop.
-#[derive(Debug, Clone, Copy)]
+///
+/// Carries whatever `user_event` needs to act, because the handlers that
+/// construct these (in `resumed()`) are the only place a `MenuEvent` or
+/// `TrayIconEvent` payload ever exists -- see constraint 3 above. Not
+/// `Copy`: `Menu`'s id is an owned `String`.
+#[derive(Debug)]
 enum Wake {
-    MenuOrTray,
+    /// A menu item was selected; carries `MenuEvent::id.0` for
+    /// `action_for_menu_id` to resolve against the current menu.
+    Menu(String),
+    /// The tray icon itself was clicked or double-clicked -- already
+    /// filtered away from pointer motion by the handler that sends it (see
+    /// `is_actionable_tray_event`). Windows and macOS both show byte's
+    /// popup menu on this click at the OS level regardless of any Rust code
+    /// here (Windows: `WM_LBUTTONUP`/`WM_RBUTTONUP` call `show_menu()`
+    /// internally; macOS: the equivalent via `performClick`), so there is
+    /// currently no `Action` tied to this variant. It exists so a real
+    /// click still wakes the loop without doing any work for a hover.
+    TrayClick,
     AccountsChanged,
 }
 
@@ -126,22 +153,34 @@ impl App {
                     };
                     let item = MenuItem::new(text, true, None);
                     ids.push(item.id().0.clone());
-                    let _ = menu.append(&item);
+                    // A load-bearing `Result`: silently dropping it yields a
+                    // menu missing a row with no indication to the user.
+                    if let Err(e) = menu.append(&item) {
+                        output::warn(&format!("could not add '{label}' to the tray menu: {e}"));
+                    }
                 }
                 MenuEntry::Separator => {
                     let sep = PredefinedMenuItem::separator();
                     ids.push(String::new());
-                    let _ = menu.append(&sep);
+                    if let Err(e) = menu.append(&sep) {
+                        output::warn(&format!("could not add a separator to the tray menu: {e}"));
+                    }
                 }
                 MenuEntry::AddAccount => {
                     let item = MenuItem::new("Add account…", true, None);
                     ids.push(item.id().0.clone());
-                    let _ = menu.append(&item);
+                    if let Err(e) = menu.append(&item) {
+                        output::warn(&format!(
+                            "could not add 'Add account…' to the tray menu: {e}"
+                        ));
+                    }
                 }
                 MenuEntry::Quit => {
                     let item = MenuItem::new("Quit", true, None);
                     ids.push(item.id().0.clone());
-                    let _ = menu.append(&item);
+                    if let Err(e) = menu.append(&item) {
+                        output::warn(&format!("could not add 'Quit' to the tray menu: {e}"));
+                    }
                 }
             }
         }
@@ -153,7 +192,8 @@ impl App {
             // notifications are best-effort and were found (Task 6) to
             // silently not display for an unpackaged binary on Windows, so
             // the tooltip naming the active account is the one feedback
-            // channel known to work.
+            // channel known to work -- which is exactly why its own
+            // `Result` must not be discarded either.
             let active = self
                 .model
                 .entries
@@ -167,7 +207,9 @@ impl App {
                     _ => None,
                 })
                 .unwrap_or_else(|| "no account".to_string());
-            let _ = tray.set_tooltip(Some(format!("byte — {active}")));
+            if let Err(e) = tray.set_tooltip(Some(format!("byte — {active}"))) {
+                output::warn(&format!("could not update the tray tooltip: {e}"));
+            }
         }
     }
 
@@ -245,17 +287,29 @@ impl ApplicationHandler for App {
         self.tray = Some(built);
         self.rebuild();
 
-        // Constraint 3: forward global receivers into the loop.
+        // Constraint 3: forward global handlers into the loop via the
+        // proxy. A handler and that event type's `receiver()` are mutually
+        // exclusive (see the module doc above) -- these two handlers are
+        // the only place `MenuEvent`/`TrayIconEvent` are ever observed from
+        // here on, so each must carry everything `user_event` needs.
+        // Do NOT add a `receiver()` drain alongside either of these; that
+        // is the bug this file once had, and it compiles and runs silently.
         let tx = self.tx.clone();
         let proxy = self.proxy.clone();
-        MenuEvent::set_event_handler(Some(move |_| {
-            let _ = tx.send(Wake::MenuOrTray);
+        MenuEvent::set_event_handler(Some(move |ev: MenuEvent| {
+            let _ = tx.send(Wake::Menu(ev.id.0));
             let _ = proxy.send_event(());
         }));
         let tx = self.tx.clone();
         let proxy = self.proxy.clone();
-        TrayIconEvent::set_event_handler(Some(move |_| {
-            let _ = tx.send(Wake::MenuOrTray);
+        TrayIconEvent::set_event_handler(Some(move |ev: TrayIconEvent| {
+            // Constraint 4: drop everything that is not a click right here,
+            // before it is ever sent through the channel -- hovering emits
+            // `Move` continuously and must cost nothing.
+            if !is_actionable_tray_event(tray_event_kind(&ev)) {
+                return;
+            }
+            let _ = tx.send(Wake::TrayClick);
             let _ = proxy.send_event(());
         }));
 
@@ -279,20 +333,17 @@ impl ApplicationHandler for App {
         while let Ok(wake) = self.wakes.try_recv() {
             match wake {
                 Wake::AccountsChanged => self.rebuild(),
-                Wake::MenuOrTray => {
-                    while let Ok(ev) = MenuEvent::receiver().try_recv() {
-                        let action = action_for_menu_id(&self.model, &self.ids, &ev.id.0);
-                        self.perform(action, event_loop);
-                        if self.exiting {
-                            return;
-                        }
-                    }
-                    // Constraint 4: drop everything that is not a click,
-                    // before any I/O happens.
-                    while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
-                        let _ = is_actionable_tray_event(tray_event_kind(&ev));
+                Wake::Menu(id) => {
+                    let action = action_for_menu_id(&self.model, &self.ids, &id);
+                    self.perform(action, event_loop);
+                    if self.exiting {
+                        return;
                     }
                 }
+                // The OS shows byte's popup menu itself in response to this
+                // click, independent of anything here -- see `Wake`'s doc
+                // comment. Nothing else is currently tied to it.
+                Wake::TrayClick => {}
             }
         }
     }
