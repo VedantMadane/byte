@@ -39,10 +39,15 @@ A few behaviors worth calling out even though they aren't errors:
   itself is left logged in as that account's credentials until you run
   `byte switch` to something else.
 - **Sessions already running.** Claude Code only reads its credentials at
-  startup. After every switch, byte prints a reminder that already-running
-  `claude` sessions keep using the previous account until restarted — it
-  currently prints this unconditionally rather than detecting whether a
-  session is actually running.
+  startup. After every switch, byte checks for already-running `claude`
+  sessions and, only if it finds at least one, prints a reminder that they
+  keep using the previous account until restarted; with none running, it
+  says nothing.
+- **The tray's "Add account…" menu item never adds an account itself.**
+  Clicking it shows a notification pointing at `byte add` instead. Adding an
+  account means logging Claude Code out and waiting for an interactive login
+  — a menu click has no way to supervise that, so the tray hands it off to
+  the one command that can.
 - **Any failure while `byte add` is waiting for a login** — a timeout, or
   anything else, such as a parse error from catching Claude Code mid-write
   to one of its files — always triggers a restore attempt before the error

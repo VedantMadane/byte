@@ -342,7 +342,11 @@ impl ApplicationHandler for App {
                 }
                 // The OS shows byte's popup menu itself in response to this
                 // click, independent of anything here -- see `Wake`'s doc
-                // comment. Nothing else is currently tied to it.
+                // comment. Nothing else is currently tied to it. Do NOT add a
+                // `rebuild()` call (or anything else that touches `self.tray`'s
+                // menu) here: `TrayIconEvent::send` runs *before*
+                // `show_tray_menu`, so it would `DestroyMenu` a popup the OS
+                // is actively displaying, out from under the user's own click.
                 Wake::TrayClick => {}
             }
         }

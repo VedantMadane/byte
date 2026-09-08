@@ -61,13 +61,15 @@ byte switch personal
 
 | Command | Description |
 |---|---|
-| `byte` / `byte list` | List stored accounts; the active one is marked with `*` |
+| `byte` | Start the tray icon (Windows and macOS only — see [Tray](#tray)) |
+| `byte list` | List stored accounts; the active one is marked with `*` |
 | `byte current` | Print the active account's label |
 | `byte switch <name>` | Switch to a stored account |
 | `byte capture` | Save the currently logged-in account |
 | `byte add [--timeout <secs>]` | Log out, then save the next account you log in as (default 300s) |
 | `byte remove <name> [--yes]` | Forget a stored account (irreversible; prompts for confirmation unless `--yes` is given) |
 | `byte rename <name> <label>` | Change an account's display label |
+| `byte autostart enable\|disable\|status` | Opt in (or out) of starting the tray at login |
 
 `<name>` matches a label, an email address, or an account UUID prefix. Every
 command accepts `--json` for machine-readable output on stdout; status
@@ -76,6 +78,37 @@ messages always go to stderr, so `--json` output can be piped safely.
 terminal, since it can't prompt in either case.
 
 See [`man/byte.md`](man/byte.md) for the full reference, or run `byte --help`.
+
+## Tray
+
+Running `byte` with no arguments — **on Windows and macOS only** — opens a
+tray icon instead of the CLI. Its menu lists every stored account (the active
+one marked, same as `byte list`), plus **Add account…** and **Quit**.
+Clicking an account switches to it; clicking **Add account…** shows a
+notification pointing at `byte add` instead of performing it directly, since
+adding an account means logging Claude Code out and waiting for an
+interactive login — something a menu click can't supervise. The tooltip
+always names the active account, which is the one feedback channel
+guaranteed to work even where desktop notifications silently don't (observed
+on an unpackaged Windows build).
+
+Only one tray runs at a time; starting a second `byte` while one is already
+running reports that instead of opening a duplicate icon. The tray and the
+CLI cooperate rather than compete: a CLI `byte switch` updates the running
+tray's menu automatically (it watches `accounts.json` for changes), and a
+short-lived lock keeps a CLI mutation and a tray-driven one from interleaving
+their writes to the same files — see [Configuration](docs/configuration.md)
+and [Troubleshooting](docs/troubleshooting.md) for both locks.
+
+On Linux (or any platform besides Windows and macOS), running `byte` with no
+arguments does not start a tray — its dependencies can't function there. It
+prints a message and exits, pointing at the CLI commands above instead.
+
+The tray never starts itself at login. `byte autostart enable` opts in
+explicitly; `byte autostart status` reports whether it's registered, and
+`byte autostart disable` removes it. See
+[Configuration](docs/configuration.md) for exactly where each platform
+registers it.
 
 ## Configuration
 

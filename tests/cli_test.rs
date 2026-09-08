@@ -313,3 +313,46 @@ fn add_timeout_from_a_logged_out_start_does_not_claim_a_false_restoration() {
         "expected an accurate 'nothing to restore' message, got:\n{stderr}"
     );
 }
+
+// The tests below cover Task 10: wiring `autostart` into the CLI and
+// retiring the old "no arguments lists accounts" help text now that no
+// arguments starts the tray instead.
+
+#[test]
+fn autostart_status_is_a_recognised_subcommand() {
+    let tp = TestPaths::new().unwrap();
+    let out = byte(&tp, &["autostart", "status"]);
+    assert!(
+        out.status.success(),
+        "autostart status should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn autostart_rejects_an_unknown_action() {
+    let tp = TestPaths::new().unwrap();
+    assert!(!byte(&tp, &["autostart", "frobnicate"]).status.success());
+}
+
+#[test]
+fn help_lists_the_autostart_command() {
+    let tp = TestPaths::new().unwrap();
+    let text = String::from_utf8_lossy(&byte(&tp, &["--help"]).stdout).to_string();
+    assert!(
+        text.lines()
+            .any(|l| l.trim_start().starts_with("autostart")),
+        "help should list autostart:\n{text}"
+    );
+}
+
+#[test]
+fn long_help_no_longer_claims_no_args_lists_accounts() {
+    // No arguments now starts the tray; the old text would be a lie.
+    let tp = TestPaths::new().unwrap();
+    let text = String::from_utf8_lossy(&byte(&tp, &["--help"]).stdout).to_string();
+    assert!(
+        text.to_lowercase().contains("tray"),
+        "long_about should describe the tray:\n{text}"
+    );
+}

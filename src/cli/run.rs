@@ -2,32 +2,70 @@
 
 use std::io::IsTerminal as _;
 
+use crate::autostart;
 use crate::claude::detect::{ProcessProbe, SysinfoProbe};
-use crate::cli::{Cli, Command};
+use crate::cli::{AutostartAction, Cli, Command};
 use crate::error::{Error, Result};
+use crate::lock::MutationGuard;
 use crate::ops::add::AddSession;
 use crate::ops::manage::{self, AccountListing};
 use crate::ops::switch::{SwitchOutcome, Switcher, SyncOutcome};
 use crate::output;
 use crate::paths::{HostPaths, RealPaths};
 use crate::store::secrets::{KeyringStore, SecretStore};
+use crate::tray;
 
 /// How often the add flow checks for a completed login.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
 pub fn run(cli: Cli) -> Result<()> {
     let paths = RealPaths::discover()?;
+
+    // No arguments starts the tray rather than listing accounts (see
+    // `Cli::long_about`). Handled before `Switcher` even exists: `tray::run`
+    // takes `paths` by value, and every other branch below only ever needs a
+    // borrow of it.
+    let Some(command) = cli.command else {
+        return tray::run(paths);
+    };
+
     let switcher = Switcher::new(&paths, KeyringStore::new());
     let probe = SysinfoProbe::new();
 
-    match cli.command {
-        None | Some(Command::List) => cmd_list(&switcher, cli.json),
-        Some(Command::Current) => cmd_current(&switcher, cli.json),
-        Some(Command::Switch { name }) => cmd_switch(&switcher, &name, cli.json, &probe),
-        Some(Command::Capture) => cmd_capture(&switcher, cli.json),
-        Some(Command::Add { timeout }) => cmd_add(&switcher, timeout, cli.json),
-        Some(Command::Remove { name, yes }) => cmd_remove(&switcher, &name, yes, cli.json),
-        Some(Command::Rename { name, label }) => cmd_rename(&switcher, &name, &label, cli.json),
+    // Read-only commands (list, current, autostart) do not take the
+    // mutation lock: they tolerate a concurrent write because every file
+    // byte writes is replaced atomically, so there is never a torn read to
+    // guard against.
+    match command {
+        Command::List => cmd_list(&switcher, cli.json),
+        Command::Current => cmd_current(&switcher, cli.json),
+        Command::Autostart { action } => cmd_autostart(action, cli.json),
+        Command::Switch { name } => {
+            // Bound to a named variable, not `_`: `let _ = ...` would drop
+            // the guard -- and release the lock -- immediately, before
+            // `cmd_switch` below ever ran. Naming it (with a leading
+            // underscore only to silence the unused-variable lint) keeps it
+            // alive until this arm's block ends, which is after the command
+            // completes.
+            let _guard = MutationGuard::acquire(&paths)?;
+            cmd_switch(&switcher, &name, cli.json, &probe)
+        }
+        Command::Capture => {
+            let _guard = MutationGuard::acquire(&paths)?;
+            cmd_capture(&switcher, cli.json)
+        }
+        Command::Add { timeout } => {
+            let _guard = MutationGuard::acquire(&paths)?;
+            cmd_add(&switcher, timeout, cli.json)
+        }
+        Command::Remove { name, yes } => {
+            let _guard = MutationGuard::acquire(&paths)?;
+            cmd_remove(&switcher, &name, yes, cli.json)
+        }
+        Command::Rename { name, label } => {
+            let _guard = MutationGuard::acquire(&paths)?;
+            cmd_rename(&switcher, &name, &label, cli.json)
+        }
     }
 }
 
@@ -76,6 +114,36 @@ fn cmd_current<P: HostPaths + Copy, S: SecretStore>(sw: &Switcher<P, S>, json: b
         Some(meta) => output::data(&meta.label),
         None if json => output::data("null"),
         None => output::info("No active account."),
+    }
+    Ok(())
+}
+
+fn cmd_autostart(action: AutostartAction, json: bool) -> Result<()> {
+    match action {
+        AutostartAction::Status => {
+            let on = autostart::status()?;
+            if json {
+                output::data(&serde_json::json!({ "autostart": on }).to_string());
+            } else if on {
+                output::info(&format!(
+                    "byte starts at login (via {}).",
+                    autostart::describe_location()
+                ));
+            } else {
+                output::info("byte does not start at login.");
+            }
+        }
+        AutostartAction::Enable => {
+            autostart::enable()?;
+            output::status(&format!(
+                "byte will start at login, via {}.",
+                autostart::describe_location()
+            ));
+        }
+        AutostartAction::Disable => {
+            autostart::disable()?;
+            output::status("byte will no longer start at login.");
+        }
     }
     Ok(())
 }
