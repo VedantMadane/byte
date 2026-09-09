@@ -50,3 +50,53 @@ impl MenuModel {
         Self { entries }
     }
 }
+
+/// One rendered row, ready for the toolkit to turn into a widget.
+///
+/// Deliberately produced one-per-`MenuEntry`, separators included: the event
+/// loop resolves a click by looking its menu id up by *position* and reading
+/// `MenuModel::entries` at that same index, so the two sequences must stay
+/// the same length and order. Skipping a non-clickable row while building
+/// would shift every later index and resolve a click to the wrong account --
+/// with one account stored, a click on "Quit" would resolve to
+/// "Add account...". Returning a row for every entry makes that invariant
+/// structural instead of a rule a comment asks the next reader to keep.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuRow {
+    /// A clickable row, with the exact text to display.
+    Item(String),
+    /// A non-clickable divider, which still occupies an index.
+    Separator,
+}
+
+/// Render every entry to its display text, one row per entry.
+pub fn menu_rows(model: &MenuModel) -> Vec<MenuRow> {
+    model
+        .entries
+        .iter()
+        .map(|entry| match entry {
+            MenuEntry::Account {
+                label,
+                detail,
+                active,
+                ..
+            } => {
+                let text = match detail {
+                    Some(d) => format!("{label}  ({d})"),
+                    None => label.clone(),
+                };
+                // A leading marker either way, so the rows stay aligned and
+                // the active one is distinguishable without relying on
+                // position.
+                MenuRow::Item(if *active {
+                    format!("● {text}")
+                } else {
+                    format!("   {text}")
+                })
+            }
+            MenuEntry::Separator => MenuRow::Separator,
+            MenuEntry::AddAccount => MenuRow::Item("Add account…".to_string()),
+            MenuEntry::Quit => MenuRow::Item("Quit".to_string()),
+        })
+        .collect()
+}

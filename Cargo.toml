@@ -30,7 +30,11 @@ tempfile = "3.27.0"
 thiserror = "2.0.20"
 time = { version = "0.3.55", features = ["formatting", "parsing", "macros", "serde"] }
 
-[target.x86_64-pc-windows-msvc.dependencies]
+# `cfg(windows)`, not a single triple: `src/autostart.rs` gates its winreg
+# consumer on `#[cfg(windows)]`, which is every `*-pc-windows-*` target.
+# Keyed to one triple, aarch64/gnu/i686 Windows builds fail to resolve the
+# crate -- and CI (windows-latest, x86_64) would never catch it.
+[target.'cfg(windows)'.dependencies]
 winreg = "0.56.0"
 
 # The tray (`src/tray/app.rs`) is Windows- and macOS-only: `tray-icon`

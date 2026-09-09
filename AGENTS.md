@@ -41,13 +41,15 @@ its identity) between Claude Code's live config files and a per-account
 store, touching only the specific keys it owns and leaving everything else
 in those files byte-for-byte untouched.
 
-Four layers, each depending only on the ones below it: `cli/` (argument
-parsing, `--json`, rendering — no file I/O or business logic of its own) →
+Four layers, each depending only on the ones below it. `cli/` (argument
+parsing, `--json`, rendering — no file I/O or business logic of its own) and
+`tray/` (the Windows/macOS tray app) sit together at the top as byte's two
+front ends →
 `ops/` (switch, add, manage — the operations, generic over the `HostPaths`
 and `SecretStore` traits rather than their concrete implementations) →
 `claude/` (reads and patches Claude Code's two files) and `store/` (account
-metadata and secrets) → `error.rs` / `output.rs` / `paths.rs` / `atomic.rs`
-(primitives used from every layer above). Nothing in a lower layer imports
+metadata and secrets) → `error.rs` / `output.rs` / `paths.rs` / `atomic.rs` /
+`lock.rs` / `autostart.rs` (primitives used from every layer above). Nothing in a lower layer imports
 from a higher one; production code instantiates
 `Switcher<&RealPaths, KeyringStore>`, tests instantiate
 `Switcher<&TestPaths, MemoryStore>` — the same generic types, no keychain or

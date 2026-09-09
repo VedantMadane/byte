@@ -1,5 +1,5 @@
 use byte::claude::detect::{
-    FakeProbe, ProcessProbe, is_claude_desktop_app, looks_like_claude_code,
+    FakeProbe, ProcessProbe, is_claude_code_process, is_claude_desktop_app, looks_like_claude_code,
 };
 use std::path::Path;
 
@@ -137,4 +137,53 @@ fn an_empty_executable_path_is_not_treated_as_the_desktop_app() {
     // /proc/<pid>/exe could not be read. The same "unknown stays counted"
     // handling applies.
     assert!(!is_claude_desktop_app(Some(Path::new(""))));
+}
+
+#[test]
+fn the_macos_desktop_app_executable_path_is_recognised() {
+    // macOS ships the desktop app as a .app bundle whose main executable is
+    // a plain `Claude` carrying no `--type=` argv marker, so the name/argv
+    // predicate cannot tell it apart from the CLI -- only the path can.
+    assert!(is_claude_desktop_app(Some(Path::new(
+        "/Applications/Claude.app/Contents/MacOS/Claude"
+    ))));
+    // Case-insensitively, since the check lowercases first.
+    assert!(is_claude_desktop_app(Some(Path::new(
+        "/Users/x/Applications/claude.app/contents/macos/claude"
+    ))));
+}
+
+#[test]
+fn the_composed_classifier_counts_the_cli_and_excludes_the_desktop_app() {
+    // The joining `&&` itself, which `SysinfoProbe` can never be tested
+    // through. All three processes below are named some case of `claude`
+    // with a single-element argv -- indistinguishable to
+    // `looks_like_claude_code`, which answers *yes* to all of them. Only
+    // the executable path separates them, so an implementation that drops
+    // the `!is_claude_desktop_app(..)` half (the bug fde66d6 fixed) passes
+    // every other test in this file and fails this one.
+    let argv = vec!["claude".to_string()];
+
+    assert!(
+        is_claude_code_process("claude", &argv, Some(Path::new("/usr/local/bin/claude"))),
+        "a real CLI session must count"
+    );
+    assert!(
+        !is_claude_code_process(
+            "Claude",
+            &argv,
+            Some(Path::new("/Applications/Claude.app/Contents/MacOS/Claude"))
+        ),
+        "the macOS desktop app must not count as a Claude Code session"
+    );
+    assert!(
+        !is_claude_code_process(
+            "claude.exe",
+            &["claude.exe".to_string()],
+            Some(Path::new(
+                r"C:\Users\x\AppData\Local\AnthropicClaude\claude.exe"
+            ))
+        ),
+        "the Windows desktop app must not count as a Claude Code session"
+    );
 }

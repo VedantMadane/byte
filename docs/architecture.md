@@ -38,6 +38,7 @@ src/
     app.rs         the winit/tray-icon event loop (Windows/macOS only): builds the tray, dispatches menu and click events
     menu.rs        MenuModel — turns an account listing into the menu's entries, independent of any UI toolkit
     events.rs      classifies a raw menu/tray event into an Action, independent of winit/tray-icon types
+    launch.rs      builds the cmd.exe / AppleScript command that opens a terminal running `byte add`
     notify.rs      best-effort desktop notifications after a tray-driven switch
     watch.rs       AccountsWatcher — watches accounts.json for external changes and triggers a menu rebuild
 ```
@@ -52,7 +53,7 @@ main.rs
   └── cli::run::run
         ├── no arguments: tray::run
         │     │  (== app::run on Windows/macOS; an immediate Error::Tray elsewhere)
-        │     ├── tray (menu, events, notify, watch)
+        │     ├── tray (menu, events, launch, notify, watch)
         │     ├── ops (switch, manage)
         │     ├── claude::detect   (the running-sessions notification)
         │     └── lock (MutationGuard, InstanceGuard)
@@ -138,9 +139,11 @@ error, output, paths, atomic
 1. `main.rs` parses argv into a `Cli` via `clap::Parser`.
 2. `cli::run::run` builds a `Switcher<&RealPaths, KeyringStore>` from
    `RealPaths::discover()` (honoring `CLAUDE_CONFIG_DIR` / `BYTE_CONFIG_DIR`),
-   takes `lock::MutationGuard` for the rest of the command (so a concurrent
-   tray-driven switch cannot interleave its writes with this one), and
-   dispatches on the parsed `Command`.
+   and dispatches on the parsed `Command`. For the mutating commands only
+   (`switch`, `capture`, `add`, `remove`, `rename`) that arm first takes
+   `lock::MutationGuard`, so a concurrent tray-driven switch cannot
+   interleave its writes with this one; `list`, `current`, and `autostart`
+   never take it.
 3. `cmd_switch` calls `Switcher::switch_to("work")`, which: resolves `"work"`
    against `accounts.json` before touching anything; syncs the currently
    live account back to the store so a token Claude Code rotated isn't lost;

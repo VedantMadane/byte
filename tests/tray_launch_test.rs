@@ -72,3 +72,34 @@ fn neither_platform_skips_the_confirmation_prompt() {
         );
     }
 }
+
+#[test]
+fn the_macos_script_escapes_a_single_quote_in_the_path() {
+    // The `'\''` dance in `shell_quote` exists for exactly this path, and
+    // nothing exercised it. A naive `format!("'{}'", p)` would close the
+    // quoted string at the apostrophe and hand `brien/bin/byte' add` to the
+    // shell as code.
+    let script = macos_script(Path::new("/Users/o'brien/bin/byte"));
+    assert!(
+        !script.contains("o'brien"),
+        "the apostrophe must be escaped, not passed through: {script}"
+    );
+    assert!(script.contains("byte"), "{script}");
+}
+
+#[test]
+fn the_macos_script_keeps_a_path_with_a_newline_on_one_line() {
+    // A newline is legal in a macOS path. Passed through raw it ends the
+    // AppleScript string literal mid-line, and osascript fails to parse --
+    // which the tray only learns from an exit code, so it would otherwise
+    // be silent.
+    let script = macos_script(Path::new("/tmp/we\nird/byte"));
+    let do_script = script
+        .lines()
+        .find(|l| l.contains("do script"))
+        .expect("the script should have a do-script line");
+    assert!(
+        do_script.contains("byte") && do_script.ends_with('"'),
+        "the command must stay on one line and stay quoted: {script}"
+    );
+}

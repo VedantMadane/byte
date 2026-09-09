@@ -383,14 +383,25 @@ fn add_without_yes_requires_confirmation_on_non_interactive_stdin() {
         "expected a hint to pass --yes on non-interactive stdin, got:
 {stderr}"
     );
-    // The gate has to come BEFORE the logout, not after it. A run that
-    // reached AddSession::begin would have waited out the one-second
-    // timeout and reported on restoring; seeing that wording here would
-    // mean byte logged the user out and only then asked permission.
     assert!(
         !stderr.contains("Nothing to restore") && !stderr.contains("Timed out"),
-        "the confirmation must gate the logout, not follow it:
+        "the poll loop must not have run:
 {stderr}"
+    );
+    // The real proof that the gate precedes the LOGOUT, not merely the poll
+    // loop. `AddSession::begin` -> `ClaudeFiles::clear` -> `JsonDocument::save`
+    // backs each Claude file up before replacing it, so an empty backup
+    // directory means neither file was written and the user is still logged
+    // in. stderr cannot prove this: "Claude Code is now logged out." is
+    // printed AFTER begin() returns, so a gate sitting between those two
+    // statements would log the user out and still leave stderr looking
+    // exactly like this. The assertions above all pass against that
+    // implementation; this one does not.
+    let backups = tp.backup_dir();
+    let backup_count = std::fs::read_dir(&backups).map(|d| d.count()).unwrap_or(0);
+    assert_eq!(
+        backup_count, 0,
+        "a gated `byte add` must not have written (and so backed up) the Claude files"
     );
 }
 

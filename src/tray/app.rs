@@ -40,7 +40,7 @@ use crate::paths::RealPaths;
 use crate::store::secrets::KeyringStore;
 use crate::tray::events::{Action, TrayEventKind, action_for_menu_id, is_actionable_tray_event};
 use crate::tray::launch;
-use crate::tray::menu::{MenuEntry, MenuModel};
+use crate::tray::menu::{MenuEntry, MenuModel, MenuRow, menu_rows};
 use crate::tray::notify;
 use crate::tray::watch::AccountsWatcher;
 
@@ -108,6 +108,15 @@ struct App {
     proxy: EventLoopProxy<()>,
     tx: Sender<Wake>,
     exiting: bool,
+    /// Set when `resumed` could not build the tray, so `run` can
+    /// return the error instead of `Ok(())` after the loop exits.
+    failure: Option<Error>,
+    /// Set while the OS is (very likely) displaying byte's popup menu, so a
+    /// rebuild cannot destroy the menu out from under it. See
+    /// `Wake::AccountsChanged` in `user_event`.
+    popup_open: bool,
+    /// A rebuild deferred because `popup_open` was set.
+    rebuild_pending: bool,
 }
 
 impl App {
@@ -134,53 +143,33 @@ impl App {
         // `ids` and reading `entries` at that same index -- skipping a
         // non-actionable row here would shift every later index and resolve
         // a click to the wrong account.
-        let mut ids = Vec::with_capacity(self.model.entries.len());
-        for entry in &self.model.entries {
-            match entry {
-                MenuEntry::Account {
-                    label,
-                    detail,
-                    active,
-                    ..
-                } => {
-                    let text = match detail {
-                        Some(d) => format!("{label}  ({d})"),
-                        None => label.clone(),
-                    };
-                    let text = if *active {
-                        format!("● {text}")
-                    } else {
-                        format!("   {text}")
-                    };
-                    let item = MenuItem::new(text, true, None);
+        // One row per entry, from `menu_rows` -- which is pure, lives in
+        // `menu.rs`, and is tested (`tests/tray_menu_test.rs`) to emit
+        // exactly one row per entry, separators included. That is what keeps
+        // `ids` index-parallel with `entries`, and it is now structural
+        // rather than a rule this loop has to remember: the id is pushed
+        // once per row on every branch, including the append-failure path,
+        // so a menu that fails to render a row still resolves later clicks
+        // to the right account.
+        let rows = menu_rows(&self.model);
+        debug_assert_eq!(rows.len(), self.model.entries.len());
+        let mut ids = Vec::with_capacity(rows.len());
+        for row in rows {
+            match row {
+                MenuRow::Item(text) => {
+                    let item = MenuItem::new(&text, true, None);
                     ids.push(item.id().0.clone());
                     // A load-bearing `Result`: silently dropping it yields a
                     // menu missing a row with no indication to the user.
                     if let Err(e) = menu.append(&item) {
-                        output::warn(&format!("could not add '{label}' to the tray menu: {e}"));
+                        output::warn(&format!("could not add '{text}' to the tray menu: {e}"));
                     }
                 }
-                MenuEntry::Separator => {
+                MenuRow::Separator => {
                     let sep = PredefinedMenuItem::separator();
                     ids.push(String::new());
                     if let Err(e) = menu.append(&sep) {
                         output::warn(&format!("could not add a separator to the tray menu: {e}"));
-                    }
-                }
-                MenuEntry::AddAccount => {
-                    let item = MenuItem::new("Add account…", true, None);
-                    ids.push(item.id().0.clone());
-                    if let Err(e) = menu.append(&item) {
-                        output::warn(&format!(
-                            "could not add 'Add account…' to the tray menu: {e}"
-                        ));
-                    }
-                }
-                MenuEntry::Quit => {
-                    let item = MenuItem::new("Quit", true, None);
-                    ids.push(item.id().0.clone());
-                    if let Err(e) = menu.append(&item) {
-                        output::warn(&format!("could not add 'Quit' to the tray menu: {e}"));
                     }
                 }
             }
@@ -256,7 +245,17 @@ impl App {
                 let Some(_guard) = (match MutationGuard::try_acquire(&self.paths) {
                     Ok(g) => g,
                     Err(e) => {
-                        output::warn(&format!("could not take the mutation lock: {e}"));
+                        // `notify::send`, not `output::warn`: its sibling
+                        // `Busy` branch six lines below notifies, and under
+                        // autostart there is no console for a bare stderr
+                        // line to land in -- making this the one action
+                        // that speaks on no channel at all, i.e. exactly
+                        // the dead-menu-item failure `notify` exists to
+                        // prevent.
+                        notify::send(
+                            "Could not switch",
+                            &format!("could not take the mutation lock: {e}"),
+                        );
                         return;
                     }
                 }) else {
@@ -274,7 +273,26 @@ impl App {
                         let (title, body) = notify::switch_message(&outcome, running);
                         notify::send(&title, &body);
                     }
-                    Err(e) => notify::send("Switch failed", &e.to_string()),
+                    Err(e) => {
+                        // Deliberately no rebuild on this path. `switch_to`
+                        // can fail AFTER committing the live credentials --
+                        // `apply()` succeeds and `save_accounts` then does
+                        // not -- leaving accounts.json still naming the
+                        // previous account while Claude Code is already on
+                        // the new one. Repainting the active marker and the
+                        // tooltip from that file would state the exact
+                        // opposite of the truth, on the two surfaces the
+                        // user reads to find out. Leave the menu as it was
+                        // and say the state is uncertain.
+                        notify::send(
+                            "Switch failed",
+                            &format!(
+                                "{e}
+Run `byte current` — the switch may have partly applied."
+                            ),
+                        );
+                        return;
+                    }
                 }
                 // Guard drops here, before the rebuild reads the file.
                 drop(_guard);
@@ -285,27 +303,21 @@ impl App {
 }
 
 impl ApplicationHandler for App {
-    fn resumed(&mut self, _event_loop: &ActiveEventLoop) {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.tray.is_some() {
             return; // Constraint 1: built once, here rather than earlier.
         }
-        let built = match icon().and_then(|i| {
-            TrayIconBuilder::new()
-                .with_icon(i)
-                .with_tooltip("byte")
-                .build()
-                .map_err(|e| Error::Tray(format!("tray: {e}")))
-        }) {
-            Ok(t) => t,
-            Err(e) => {
-                output::error(&format!("could not create the tray icon: {e}"));
-                return;
-            }
-        };
-        self.tray = Some(built);
-        self.rebuild();
-
-        // Constraint 3: forward global handlers into the loop via the
+        // Constraint 3, and it must happen HERE -- before the tray icon
+        // exists and therefore before anything can emit an event. Both
+        // crates implement `send()` as `HANDLER.get_or_init(|| None)`, so
+        // the very first event delivered LATCHES that cell: an event
+        // arriving before this runs sets it to `None` permanently, and the
+        // `set_event_handler` below then silently does nothing
+        // (`let _ = ...set(...)`), leaving the menu inert for the life of
+        // the process with no error anywhere. Installing before the icon is
+        // visible closes that window entirely.
+        //
+        // Forward global handlers into the loop via the proxy. A handler and
         // proxy. A handler and that event type's `receiver()` are mutually
         // exclusive (see the module doc above) -- these two handlers are
         // the only place `MenuEvent`/`TrayIconEvent` are ever observed from
@@ -331,6 +343,32 @@ impl ApplicationHandler for App {
             let _ = proxy.send_event(());
         }));
 
+        let built = match icon().and_then(|i| {
+            TrayIconBuilder::new()
+                .with_icon(i)
+                .with_tooltip("byte")
+                .build()
+                .map_err(|e| Error::Tray(format!("tray: {e}")))
+        }) {
+            Ok(t) => t,
+            Err(e) => {
+                // Not just a printed line and a return: `byte` with no
+                // arguments IS the tray now, so returning here would park
+                // the loop on `ControlFlow::Wait` forever -- an invisible
+                // process with no icon, killable only from Task Manager,
+                // and `run` would still report success. Stash the error and
+                // exit so it propagates like every other command's does.
+                // `Shell_NotifyIconW` really does fail; an explorer.exe
+                // restart is the everyday case.
+                self.failure = Some(e);
+                self.exiting = true;
+                event_loop.exit();
+                return;
+            }
+        };
+        self.tray = Some(built);
+        self.rebuild();
+
         let tx = self.tx.clone();
         let proxy = self.proxy.clone();
         match AccountsWatcher::start(&self.paths, move || {
@@ -350,8 +388,27 @@ impl ApplicationHandler for App {
         }
         while let Ok(wake) = self.wakes.try_recv() {
             match wake {
-                Wake::AccountsChanged => self.rebuild(),
+                Wake::AccountsChanged => {
+                    // Never rebuild while the popup may be up: `rebuild`
+                    // calls `tray.set_menu`, which drops the old
+                    // `muda::Menu` and `DestroyMenu`s the very HMENU
+                    // `TrackPopupMenu` is displaying. `TrackPopupMenu` runs
+                    // a nested modal message loop that pumps this thread's
+                    // messages -- including the one `send_event` posts --
+                    // so a watcher event really can arrive mid-popup. It is
+                    // reachable without trying: the tray's own switch
+                    // writes accounts.json, so switching and immediately
+                    // reopening the menu does it, as does `byte switch` in
+                    // a terminal with the menu open.
+                    if self.popup_open {
+                        self.rebuild_pending = true;
+                    } else {
+                        self.rebuild();
+                    }
+                }
                 Wake::Menu(id) => {
+                    // Selecting an item dismisses the popup.
+                    self.popup_open = false;
                     let action = action_for_menu_id(&self.model, &self.ids, &id);
                     self.perform(action, event_loop);
                     if self.exiting {
@@ -365,7 +422,13 @@ impl ApplicationHandler for App {
                 // menu) here: `TrayIconEvent::send` runs *before*
                 // `show_tray_menu`, so it would `DestroyMenu` a popup the OS
                 // is actively displaying, out from under the user's own click.
-                Wake::TrayClick => {}
+                Wake::TrayClick => {
+                    // `TrayIconEvent::send` runs *before* `show_tray_menu`,
+                    // so this wake is queued before the modal loop starts
+                    // and is then pumped by it -- setting the flag while
+                    // the popup is actually up, which is when it is needed.
+                    self.popup_open = true;
+                }
             }
         }
     }
@@ -373,6 +436,16 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if self.exiting {
             return; // Constraint 2.
+        }
+        // Reaching here means winit's own loop went idle, so any nested
+        // modal loop `TrackPopupMenu` was running has returned and the
+        // popup is gone. Cleared unconditionally: if the flag ever latched
+        // on, the watcher would stop updating the menu for the rest of the
+        // process's life, which is a worse failure than the one it guards.
+        self.popup_open = false;
+        if self.rebuild_pending {
+            self.rebuild_pending = false;
+            self.rebuild();
         }
         event_loop.set_control_flow(ControlFlow::Wait);
     }
@@ -417,9 +490,19 @@ pub fn run(paths: RealPaths) -> Result<()> {
         proxy,
         tx,
         exiting: false,
+        failure: None,
+        popup_open: false,
+        rebuild_pending: false,
     };
 
     event_loop
         .run_app(&mut app)
-        .map_err(|e| Error::Tray(format!("tray event loop: {e}")))
+        .map_err(|e| Error::Tray(format!("tray event loop: {e}")))?;
+
+    // A tray that could not be built exits the loop cleanly, so `run_app`
+    // returns `Ok`; the real failure is waiting here.
+    match app.failure {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }

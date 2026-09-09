@@ -1,10 +1,10 @@
-//! Runs the tray so a human can confirm it behaves correctly (Task 9, Step 4).
+//! Runs the tray so a human can confirm it behaves correctly.
 //!
-//! `tray::run` is not wired into the `byte` binary's own argument dispatch
-//! yet -- that is a later task (wiring `byte` with no arguments to launch
-//! the tray). Until then this mirrors `probe_check.rs` and
-//! `notify_check.rs`: a small example that exercises not-yet-wired
-//! functionality directly, run with `cargo run --example tray_check`.
+//! `byte` with no arguments now starts the tray itself, so this is no
+//! longer the only way to reach it. It is kept because it runs `tray::run`
+//! directly, without going through argument dispatch or the single-instance
+//! check that `byte` performs -- useful when isolating a tray problem from
+//! a CLI one. Run with `cargo run --example tray_check`.
 fn main() {
     let paths = byte::paths::RealPaths::discover().expect("could not resolve byte's paths");
     println!("starting the byte tray — look for the icon in your notification area");

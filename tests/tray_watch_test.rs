@@ -191,3 +191,52 @@ fn an_atomic_replace_of_the_accounts_file_fires_the_callback() {
         "the watcher never fired for an atomic replace (rename) onto the accounts file"
     );
 }
+
+/// The negative case, and the one the name filter exists for.
+///
+/// The watch is on `byte_config_dir()`, not on `accounts.json` alone (see
+/// the atomic-replace test above for why it has to be). That directory also
+/// holds `mutation.lock` and `tray.lock`, and *every* CLI command creates or
+/// opens one of them there -- so without the `file_name()` filter that
+/// commit `c528c86` narrowed this matching to, ordinary lock churn would
+/// wake the tray and make it re-read `accounts.json` and rebuild its whole
+/// menu. Deleting the filter passes every other test in this file, because
+/// all of them only ever assert that the callback *did* fire.
+#[test]
+fn an_unrelated_file_in_the_watched_directory_does_not_fire_the_callback() {
+    let tp = TestPaths::new().unwrap();
+    std::fs::write(tp.accounts_file(), r#"{"seed":true}"#).unwrap();
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&hits);
+    let _watcher = AccountsWatcher::start(&tp, move || {
+        seen.fetch_add(1, Ordering::SeqCst);
+    })
+    .unwrap();
+
+    // Prove the watcher is live first -- otherwise "nothing fired" below
+    // would also pass for a watcher that never started at all.
+    std::fs::write(tp.accounts_file(), r#"{"live":true}"#).unwrap();
+    assert!(
+        wait_until(Duration::from_secs(5), || hits.load(Ordering::SeqCst) > 0),
+        "the watcher never fired for accounts.json itself"
+    );
+    let before = wait_until_settled(Duration::from_secs(5), AccountsWatcher::DEBOUNCE, || {
+        hits.load(Ordering::SeqCst)
+    });
+
+    // Now touch the neighbours the tray must ignore, the same way byte's own
+    // locking does: same directory, different name.
+    std::fs::write(tp.byte_config_dir().join("mutation.lock"), b"").unwrap();
+    std::fs::write(tp.byte_config_dir().join("tray.lock"), b"").unwrap();
+
+    // Proving an absence has no condition to poll for; give the watcher a
+    // real window in which to wrongly fire, then check.
+    std::thread::sleep(Duration::from_millis(500));
+
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        before,
+        "writing the lock files must not wake the tray -- every CLI command touches them"
+    );
+}

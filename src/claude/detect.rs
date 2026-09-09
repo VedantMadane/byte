@@ -89,10 +89,33 @@ pub fn is_claude_desktop_app(exe: Option<&Path>) -> bool {
         return false;
     };
 
-    path.to_string_lossy()
+    let path = path
+        .to_string_lossy()
         .replace('\\', "/")
-        .to_ascii_lowercase()
-        .contains("/anthropicclaude/")
+        .to_ascii_lowercase();
+
+    // Windows lays the app out under `.../AnthropicClaude/`. macOS ships
+    // it as `Claude.app/Contents/MacOS/Claude`, whose executable stem is a
+    // plain `claude` and whose argv carries no `--type=` marker (the
+    // Electron helpers are separate `Claude Helper*` bundles, already
+    // excluded by name). Without the second arm, every macOS user with
+    // Claude Desktop open sees a phantom "1 running Claude Code session
+    // still uses the previous account" after every single switch -- and
+    // macOS is a first-class tray platform here, so a Windows-only
+    // exclusion closes this gap on only one of the two supported systems.
+    path.contains("/anthropicclaude/") || path.contains("/claude.app/contents/macos/")
+}
+
+/// Whether one entry in the process table is a Claude Code session.
+///
+/// The composition of the two predicates above, extracted so it can be
+/// tested: `SysinfoProbe` needs a live process table and therefore never
+/// is. Dropping the `!is_claude_desktop_app(..)` half re-introduces
+/// exactly the bug commit `fde66d6` fixed, and every test of the two
+/// halves individually still passes with it gone -- so the joining `&&`
+/// needs a test of its own.
+pub fn is_claude_code_process(name: &str, argv: &[String], exe: Option<&Path>) -> bool {
+    looks_like_claude_code(name, argv) && !is_claude_desktop_app(exe)
 }
 
 /// Counts sessions from the real process table.
@@ -107,10 +130,19 @@ impl SysinfoProbe {
 
 impl ProcessProbe for SysinfoProbe {
     fn running_claude_sessions(&self) -> usize {
-        use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+        use sysinfo::{ProcessRefreshKind, RefreshKind, System, UpdateKind};
 
+        // Only the two fields the classifier actually reads. `everything()`
+        // additionally collects memory, disk I/O, users and environment for
+        // every process on the machine -- and this runs on the tray's winit
+        // event-loop thread after each switch, so the tray stops responding
+        // for however long that takes.
         let system = System::new_with_specifics(
-            RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
+            RefreshKind::nothing().with_processes(
+                ProcessRefreshKind::nothing()
+                    .with_cmd(UpdateKind::Always)
+                    .with_exe(UpdateKind::Always),
+            ),
         );
 
         system
@@ -123,7 +155,7 @@ impl ProcessProbe for SysinfoProbe {
                     .iter()
                     .map(|s| s.to_string_lossy().into_owned())
                     .collect();
-                looks_like_claude_code(&name, &argv) && !is_claude_desktop_app(p.exe())
+                is_claude_code_process(&name, &argv, p.exe())
             })
             .count()
     }

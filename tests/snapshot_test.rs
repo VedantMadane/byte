@@ -444,3 +444,48 @@ fn account_snapshot_survives_a_json_round_trip() {
     assert_eq!(restored.user_id, original.user_id);
     assert_eq!(restored, original);
 }
+
+#[test]
+fn clear_rolls_back_credentials_when_the_config_write_fails() {
+    // `clear()` commits the credentials file FIRST, exactly as `apply()`
+    // does -- so it needs the same rollback `apply()` has, and did not have
+    // one. Without it: the credentials write commits (Claude Code is now
+    // logged out), the config half then fails, and the error surfaced to
+    // the user describes only that second failure -- reading like nothing
+    // happened. Worse, the failure propagates out of `AddSession::begin`,
+    // so no `AddSession` value ever exists and `abort()`/`resolve_add_failure`
+    // -- the entire "a failed add must restore you" apparatus -- never run.
+    // `byte current`, the tray tooltip, and the menu's active marker all
+    // still name the old account, because `accounts.json` was never touched.
+    let tp = TestPaths::new().unwrap();
+    seed(&tp, "uuid-1", "a@example.com", "refresh-1");
+    // A regular file sits where the config file's parent directory would
+    // need to be, so the config half can never be loaded or written.
+    std::fs::write(
+        tp.root().join("not-a-directory"),
+        b"blocks directory creation",
+    )
+    .unwrap();
+
+    let before_creds = std::fs::read_to_string(tp.claude_credentials()).unwrap();
+    let paths = UnwritableConfigPaths { inner: &tp };
+
+    let err = ClaudeFiles::new(&paths).clear().unwrap_err();
+
+    // The rollback itself should succeed -- the credentials file's own
+    // directory is untouched -- so the caller sees the plain config failure.
+    assert!(
+        !matches!(err, byte::Error::ApplyRollbackFailed { .. }),
+        "expected a clean rollback (plain config error), got: {err}"
+    );
+
+    let after_creds = std::fs::read_to_string(tp.claude_credentials()).unwrap();
+    assert_eq!(
+        after_creds, before_creds,
+        "a failed clear() must leave the credentials file exactly as it was"
+    );
+    assert!(
+        after_creds.contains("claudeAiOauth"),
+        "a failed clear() must leave the user logged IN, not silently logged out: {after_creds}"
+    );
+}

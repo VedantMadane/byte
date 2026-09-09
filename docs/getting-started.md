@@ -48,7 +48,16 @@ You should see one account, marked active with `*`.
 byte add
 ```
 
-This logs Claude Code out and waits for you to log in again. In another
+byte asks you to confirm first, because this logs Claude Code out:
+
+```
+Add an account? This logs Claude Code out now and waits up to 300s for a new login. [y/N]
+```
+
+Answer `n` and nothing changes. Answer `y` and byte logs Claude Code out and
+waits for you to log in again. (Scripts can't answer a prompt, so `byte add`
+requires `--yes` when standard input isn't a terminal or when `--json` is
+set.) In another
 terminal, run `claude` and complete the login flow for your second account —
 personal, work, or whichever one you want to add. As soon as byte detects a
 new, different account has finished logging in, it saves it automatically and

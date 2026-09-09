@@ -51,7 +51,11 @@ pub fn windows_command_line(exe: &Path) -> String {
 /// AppleScript string literal it sits inside.
 pub fn macos_script(exe: &Path) -> String {
     let command = format!("{} add", shell_quote(&exe.to_string_lossy()));
-    let escaped = command.replace('\\', r"\\").replace('"', "\\\"");
+    let escaped = command
+        .replace('\\', r"\\")
+        .replace('"', "\\\"")
+        .replace('\n', r"\n")
+        .replace('\r', r"\r");
     format!(
         "tell application \"Terminal\"\n\
          activate\n\
@@ -90,7 +94,11 @@ pub fn spawn_add() -> Result<()> {
     // `raw_arg`, not `arg`: Rust would quote the whole thing as a single
     // argument, defeating the deliberate quoting `windows_command_line`
     // builds for cmd's own parser.
-    std::process::Command::new("cmd")
+    // `%COMSPEC%` rather than a bare "cmd", which would be resolved
+    // through `PATH`. This process guards credentials; it should not launch
+    // whatever `cmd` a caller-controlled `PATH` happens to find first.
+    let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+    std::process::Command::new(shell)
         .raw_arg(windows_command_line(&exe))
         .creation_flags(CREATE_NEW_CONSOLE)
         .spawn()
@@ -102,11 +110,27 @@ pub fn spawn_add() -> Result<()> {
 #[cfg(target_os = "macos")]
 pub fn spawn_add() -> Result<()> {
     let exe = current_exe()?;
-    std::process::Command::new("osascript")
+    // `status()`, not `spawn()`. `osascript` returns as soon as Terminal
+    // has been told to run the script -- it does not wait for `byte add` --
+    // so waiting costs nothing here and is the only way to find out it
+    // failed. The first "Add account…" click triggers a TCC Automation
+    // consent prompt for controlling Terminal; deny it and osascript exits
+    // non-zero with nothing on screen, and returning `Ok` would have the
+    // tray cheerfully tell the user to go answer a prompt that does not
+    // exist. Waiting also reaps the child, which `spawn` alone left as a
+    // zombie per click for the life of the tray. Absolute path so the
+    // binary cannot be resolved through a caller-controlled `PATH`.
+    let status = std::process::Command::new("/usr/bin/osascript")
         .arg("-e")
         .arg(macos_script(&exe))
-        .spawn()
+        .status()
         .map_err(|e| Error::Tray(format!("could not open a terminal: {e}")))?;
+
+    if !status.success() {
+        return Err(Error::Tray(format!(
+            "could not open a terminal: osascript exited with {status}. If macOS asked              for permission to control Terminal and it was denied, re-enable it under              System Settings > Privacy & Security > Automation."
+        )));
+    }
     Ok(())
 }
 

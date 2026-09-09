@@ -1,6 +1,6 @@
 use byte::ops::manage::AccountListing;
 use byte::store::metadata::AccountMeta;
-use byte::tray::menu::{MenuEntry, MenuModel};
+use byte::tray::menu::{MenuEntry, MenuModel, MenuRow, menu_rows};
 
 fn listing(uuid: &str, label: &str, org: Option<&str>, active: bool) -> AccountListing {
     AccountListing {
@@ -138,5 +138,81 @@ fn the_footer_keeps_its_shape_with_more_than_one_account() {
             MenuEntry::Separator,
             MenuEntry::Quit,
         ]
+    );
+}
+
+// The index-parallelism invariant, which previously lived only in a comment
+// inside `App::rebuild` -- a function needing a real TrayIcon, and so having
+// no coverage at all. Deleting the separator's row there would shift every
+// later index: with one account stored, a click on "Quit" would resolve to
+// "Add account…" and silently spawn a terminal instead of quitting.
+
+#[test]
+fn every_entry_renders_exactly_one_row() {
+    let model = MenuModel::from_listing(&[
+        listing("u1", "personal", None, false),
+        listing("u2", "work", Some("Indicio"), true),
+    ]);
+    let rows = menu_rows(&model);
+    assert_eq!(
+        rows.len(),
+        model.entries.len(),
+        "rows and entries are looked up by shared index and must stay parallel"
+    );
+}
+
+#[test]
+fn separators_occupy_a_row_of_their_own() {
+    // The specific deletion that breaks the invariant: dropping separator
+    // rows. Asserting the positions of the separators pins it directly.
+    let model = MenuModel::from_listing(&[listing("u1", "work", None, true)]);
+    let rows = menu_rows(&model);
+    for (index, entry) in model.entries.iter().enumerate() {
+        let is_separator = matches!(entry, MenuEntry::Separator);
+        assert_eq!(
+            matches!(rows[index], MenuRow::Separator),
+            is_separator,
+            "row {index} disagrees with its entry about being a separator"
+        );
+    }
+}
+
+#[test]
+fn exactly_the_active_accounts_row_is_marked() {
+    // Identity, not position: the active account is in the middle.
+    let model = MenuModel::from_listing(&[
+        listing("u1", "personal", None, false),
+        listing("u2", "work", None, true),
+        listing("u3", "other", None, false),
+    ]);
+    let marked: Vec<String> = menu_rows(&model)
+        .into_iter()
+        .filter_map(|row| match row {
+            MenuRow::Item(text) if text.starts_with('●') => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        marked.len(),
+        1,
+        "exactly one row should be marked active: {marked:?}"
+    );
+    assert!(
+        marked[0].contains("work"),
+        "the marked row must be the active account, got {}",
+        marked[0]
+    );
+}
+
+#[test]
+fn the_add_and_quit_rows_render_their_own_text() {
+    let rows = menu_rows(&MenuModel::from_listing(&[]));
+    assert!(
+        rows.contains(&MenuRow::Item("Add account…".to_string())),
+        "{rows:?}"
+    );
+    assert!(
+        rows.contains(&MenuRow::Item("Quit".to_string())),
+        "{rows:?}"
     );
 }

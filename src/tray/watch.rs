@@ -83,9 +83,16 @@ impl AccountsWatcher {
         Ok(Self { _watcher: watcher })
     }
 
-    /// How long callers should coalesce bursts before acting.
+    /// How long one logical write keeps producing events.
     ///
-    /// One logical write can produce several events (create temp, rename,
-    /// metadata update). Rebuilding the menu once per burst is enough.
+    /// A single write is a *burst* -- create temp, rename, metadata update
+    /// -- not one event. Note what this is and is not: the tray does not
+    /// coalesce on it, it rebuilds once per event, which is wasteful but
+    /// harmless (a rebuild is a file read plus a menu swap, and stale menu
+    /// ids resolve to `Ignore`). What this constant is actually for is
+    /// tests: it is the product's own statement of how long to wait before
+    /// a sampled event count can be treated as final, which
+    /// `tests/tray_watch_test.rs` needs to establish a stable baseline
+    /// rather than racing its own fixture.
     pub const DEBOUNCE: Duration = Duration::from_millis(250);
 }

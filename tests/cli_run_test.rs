@@ -16,6 +16,7 @@ use byte::Error;
 use byte::claude::files::ClaudeFiles;
 use byte::claude::snapshot::SCHEMA_VERSION;
 use byte::cli::run::{cmd_add, resolve_add_failure, running_sessions_warning, switch_json};
+use byte::lock::MutationGuard;
 use byte::ops::switch::{SwitchOutcome, Switcher, SyncOutcome};
 use byte::paths::{HostPaths, TestPaths};
 use byte::store::metadata::AccountMeta;
@@ -297,4 +298,29 @@ fn cmd_add_restores_the_previous_account_when_poll_once_fails() {
     // the live account, so the user is not left logged out.
     let restored = ClaudeFiles::new(&paths).capture().unwrap().unwrap();
     assert_eq!(restored.email(), Some("a@example.com"));
+}
+
+#[test]
+fn cmd_add_settles_confirmation_before_taking_the_mutation_lock() {
+    // Ordering, pinned by holding the lock from underneath. The
+    // confirmation prompt blocks on stdin with no timeout, so a lock taken
+    // before it is pinned open for as long as nobody answers -- and the
+    // tray opens exactly that prompt, in a spawned terminal, on one click.
+    // An unanswered prompt would then make every tray menu account and
+    // every CLI mutation fail with `Error::Busy` indefinitely.
+    //
+    // With another guard held, an implementation that locks first reports
+    // Busy; one that checks confirmation first reports ConfirmationRequired.
+    // `json = true` short-circuits before `is_terminal()`, so this cannot
+    // block on an interactive stdin.
+    let tp = TestPaths::new().unwrap();
+    let _held = MutationGuard::acquire(&tp).expect("first guard should acquire");
+
+    let sw = Switcher::new(&tp, MemoryStore::new());
+    let result = cmd_add(&sw, 300, false, true);
+
+    assert!(
+        matches!(result, Err(Error::ConfirmationRequired { .. })),
+        "the confirmation gate must precede the lock; got {result:?}"
+    );
 }

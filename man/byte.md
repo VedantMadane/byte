@@ -109,10 +109,13 @@ running keep the previous account until they are restarted. When a switch
 completes, byte reports this only if it actually detects a running Claude
 Code session; with none running, it says nothing.
 
-**switch**, **capture**, **add**, **remove**, and **rename** each take a
-short-lived advisory lock (`mutation.lock` in byte's configuration directory)
-for the duration of the write, so a CLI invocation and a tray-driven switch
-can never interleave their writes to the same files. **list**, **current**,
+**switch**, **capture**, **add**, **remove**, and **rename** each take an
+advisory lock (`mutation.lock` in byte's configuration directory) for the
+duration of the command, so a CLI invocation and a tray-driven switch can
+never interleave their writes to the same files. It is short-lived for every
+one of them except **add**, which takes it only *after* its confirmation
+prompt is answered and then holds it while waiting for the new login — up to
+**--timeout** seconds. **list**, **current**,
 and **autostart** do not take this lock; every file byte writes is replaced
 atomically, so a concurrent read is always safe. If another byte process
 already holds the lock, the command fails immediately with "another byte

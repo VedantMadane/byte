@@ -54,10 +54,10 @@ pub fn run(cli: Cli) -> Result<()> {
             let _guard = MutationGuard::acquire(&paths)?;
             cmd_capture(&switcher, cli.json)
         }
-        Command::Add { timeout, yes } => {
-            let _guard = MutationGuard::acquire(&paths)?;
-            cmd_add(&switcher, timeout, yes, cli.json)
-        }
+        // The only mutating arm that does NOT take the lock here: `cmd_add`
+        // takes it itself, after its confirmation prompt. See the comment at
+        // that acquisition for why the prompt must not be held under lock.
+        Command::Add { timeout, yes } => cmd_add(&switcher, timeout, yes, cli.json),
         Command::Remove { name, yes } => {
             let _guard = MutationGuard::acquire(&paths)?;
             cmd_remove(&switcher, &name, yes, cli.json)
@@ -278,6 +278,18 @@ pub fn cmd_add<P: HostPaths + Copy, S: SecretStore>(
             return Ok(());
         }
     }
+
+    // Taken here rather than in `run`'s dispatch arm, and only once the
+    // confirmation above is settled. `output::confirm` blocks on stdin with
+    // no timeout, so a lock held across it is pinned open for as long as
+    // nobody answers -- and the tray now opens exactly that prompt in a
+    // spawned terminal on a single click. An unanswered one would make
+    // every tray menu account, and every `byte switch`/`capture`/`remove`/
+    // `rename` in any terminal, fail with `Error::Busy` indefinitely, while
+    // that error tells the user to "wait for it to finish" and nothing ever
+    // finishes. Everything below IS bounded -- by `--timeout` -- so it is
+    // legitimate to hold the lock across it.
+    let _guard = MutationGuard::acquire(sw.paths())?;
 
     let session = AddSession::begin(sw)?;
 
