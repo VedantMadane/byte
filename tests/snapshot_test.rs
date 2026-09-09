@@ -444,3 +444,103 @@ fn account_snapshot_survives_a_json_round_trip() {
     assert_eq!(restored.user_id, original.user_id);
     assert_eq!(restored, original);
 }
+
+#[test]
+fn clear_rolls_back_credentials_when_the_config_write_fails() {
+    // `clear()` commits the credentials file FIRST, exactly as `apply()`
+    // does -- so it needs the same rollback `apply()` has, and did not have
+    // one. Without it: the credentials write commits (Claude Code is now
+    // logged out), the config half then fails, and the error surfaced to
+    // the user describes only that second failure -- reading like nothing
+    // happened. Worse, the failure propagates out of `AddSession::begin`,
+    // so no `AddSession` value ever exists and `abort()`/`resolve_add_failure`
+    // -- the entire "a failed add must restore you" apparatus -- never run.
+    // `byte current`, the tray tooltip, and the menu's active marker all
+    // still name the old account, because `accounts.json` was never touched.
+    let tp = TestPaths::new().unwrap();
+    seed(&tp, "uuid-1", "a@example.com", "refresh-1");
+    // A regular file sits where the config file's parent directory would
+    // need to be, so the config half can never be loaded or written.
+    std::fs::write(
+        tp.root().join("not-a-directory"),
+        b"blocks directory creation",
+    )
+    .unwrap();
+
+    let before_creds = std::fs::read_to_string(tp.claude_credentials()).unwrap();
+    let paths = UnwritableConfigPaths { inner: &tp };
+
+    let err = ClaudeFiles::new(&paths).clear().unwrap_err();
+
+    // The rollback itself should succeed -- the credentials file's own
+    // directory is untouched -- so the caller sees the plain config failure.
+    assert!(
+        !matches!(err, byte::Error::ApplyRollbackFailed { .. }),
+        "expected a clean rollback (plain config error), got: {err}"
+    );
+
+    let after_creds = std::fs::read_to_string(tp.claude_credentials()).unwrap();
+    assert_eq!(
+        after_creds, before_creds,
+        "a failed clear() must leave the credentials file exactly as it was"
+    );
+    assert!(
+        after_creds.contains("claudeAiOauth"),
+        "a failed clear() must leave the user logged IN, not silently logged out: {after_creds}"
+    );
+}
+
+/// Paths whose byte config directory -- and so the backup directory under
+/// it -- can never be created, so the very first step of any `save` fails
+/// while both Claude files stay untouched.
+struct UnwritableBackupPaths<'a> {
+    inner: &'a TestPaths,
+}
+
+impl HostPaths for UnwritableBackupPaths<'_> {
+    fn claude_config(&self) -> std::path::PathBuf {
+        self.inner.claude_config()
+    }
+    fn claude_credentials(&self) -> std::path::PathBuf {
+        self.inner.claude_credentials()
+    }
+    fn byte_config_dir(&self) -> std::path::PathBuf {
+        self.inner.root().join("not-a-directory").join("byte")
+    }
+}
+
+#[test]
+fn a_precommit_failure_reports_its_own_cause_not_a_rollback_failure() {
+    // Issue #10 part 2, made more reachable by giving `clear()` a rollback:
+    // every pre-commit failure of `creds.save` (permission denied, disk
+    // full, read-only volume) recurs identically on the rollback attempt,
+    // so routing it through `rollback_credentials` would report
+    // `ApplyRollbackFailed` -- "the credentials and config files may now
+    // disagree about which account is active and must be checked by hand"
+    // -- when nothing was written and the two files are perfectly
+    // consistent. That sends the user into backup recovery after a no-op,
+    // where restoring a stale `.claude.json` would discard unrelated Claude
+    // Code state. Nothing was committed, so the real cause must survive.
+    let tp = TestPaths::new().unwrap();
+    seed(&tp, "uuid-1", "a@example.com", "refresh-1");
+    std::fs::write(
+        tp.root().join("not-a-directory"),
+        b"blocks directory creation",
+    )
+    .unwrap();
+
+    let before_creds = std::fs::read_to_string(tp.claude_credentials()).unwrap();
+    let paths = UnwritableBackupPaths { inner: &tp };
+
+    let err = ClaudeFiles::new(&paths).clear().unwrap_err();
+
+    assert!(
+        !matches!(err, byte::Error::ApplyRollbackFailed { .. }),
+        "nothing was committed, so this must report its own cause: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tp.claude_credentials()).unwrap(),
+        before_creds,
+        "the credentials file must be untouched"
+    );
+}

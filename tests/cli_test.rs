@@ -299,7 +299,13 @@ fn add_timeout_from_a_logged_out_start_does_not_claim_a_false_restoration() {
     std::fs::write(tp.root().join(".credentials.json"), "{}").unwrap();
     std::fs::write(tp.root().join(".claude.json"), "{}").unwrap();
 
-    let out = byte(&tp, &["add", "--timeout", "1"]);
+    // `--yes` is required to get past the confirmation gate to the timeout
+    // path this test is about; stdin is Stdio::null() here, so without it
+    // the run stops at the gate and never reaches AddSession::begin. Safe
+    // for the same reason the rest of this test is: both files are seeded
+    // empty, so capture_current() short-circuits to NotLoggedIn before the
+    // secret store is ever touched.
+    let out = byte(&tp, &["add", "--timeout", "1", "--yes"]);
 
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -311,5 +317,108 @@ fn add_timeout_from_a_logged_out_start_does_not_claim_a_false_restoration() {
     assert!(
         stderr.contains("Nothing to restore"),
         "expected an accurate 'nothing to restore' message, got:\n{stderr}"
+    );
+}
+
+// The tests below cover Task 10: wiring `autostart` into the CLI and
+// retiring the old "no arguments lists accounts" help text now that no
+// arguments starts the tray instead.
+
+#[test]
+fn autostart_status_is_a_recognised_subcommand() {
+    let tp = TestPaths::new().unwrap();
+    let out = byte(&tp, &["autostart", "status"]);
+    assert!(
+        out.status.success(),
+        "autostart status should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn autostart_rejects_an_unknown_action() {
+    let tp = TestPaths::new().unwrap();
+    assert!(!byte(&tp, &["autostart", "frobnicate"]).status.success());
+}
+
+#[test]
+fn help_lists_the_autostart_command() {
+    let tp = TestPaths::new().unwrap();
+    let text = String::from_utf8_lossy(&byte(&tp, &["--help"]).stdout).to_string();
+    assert!(
+        text.lines()
+            .any(|l| l.trim_start().starts_with("autostart")),
+        "help should list autostart:\n{text}"
+    );
+}
+
+#[test]
+fn long_help_no_longer_claims_no_args_lists_accounts() {
+    // No arguments now starts the tray; the old text would be a lie.
+    let tp = TestPaths::new().unwrap();
+    let text = String::from_utf8_lossy(&byte(&tp, &["--help"]).stdout).to_string();
+    assert!(
+        text.to_lowercase().contains("tray"),
+        "long_about should describe the tray:\n{text}"
+    );
+}
+
+// The tests below cover `byte add`'s confirmation gate. Like the `remove`
+// ones above, they stop AT the gate rather than passing `--yes`, so none of
+// them reaches AddSession::begin -- which logs Claude Code out and, for
+// this compiled binary, talks to a REAL OS keychain.
+
+#[test]
+fn add_without_yes_requires_confirmation_on_non_interactive_stdin() {
+    let tp = TestPaths::new().unwrap();
+    std::fs::write(tp.root().join(".credentials.json"), "{}").unwrap();
+    std::fs::write(tp.root().join(".claude.json"), "{}").unwrap();
+
+    let out = byte(&tp, &["add", "--timeout", "1"]);
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--yes"),
+        "expected a hint to pass --yes on non-interactive stdin, got:
+{stderr}"
+    );
+    assert!(
+        !stderr.contains("Nothing to restore") && !stderr.contains("Timed out"),
+        "the poll loop must not have run:
+{stderr}"
+    );
+    // The real proof that the gate precedes the LOGOUT, not merely the poll
+    // loop. `AddSession::begin` -> `ClaudeFiles::clear` -> `JsonDocument::save`
+    // backs each Claude file up before replacing it, so an empty backup
+    // directory means neither file was written and the user is still logged
+    // in. stderr cannot prove this: "Claude Code is now logged out." is
+    // printed AFTER begin() returns, so a gate sitting between those two
+    // statements would log the user out and still leave stderr looking
+    // exactly like this. The assertions above all pass against that
+    // implementation; this one does not.
+    let backups = tp.backup_dir();
+    let backup_count = std::fs::read_dir(&backups).map(|d| d.count()).unwrap_or(0);
+    assert_eq!(
+        backup_count, 0,
+        "a gated `byte add` must not have written (and so backed up) the Claude files"
+    );
+}
+
+#[test]
+fn add_json_without_yes_requires_confirmation_and_emits_no_stdout() {
+    // --json must never prompt (it would corrupt machine-readable stdout)
+    // -- it requires --yes outright, same as non-interactive stdin.
+    let tp = TestPaths::new().unwrap();
+    std::fs::write(tp.root().join(".credentials.json"), "{}").unwrap();
+    std::fs::write(tp.root().join(".claude.json"), "{}").unwrap();
+
+    let out = byte(&tp, &["add", "--timeout", "1", "--json"]);
+
+    assert!(!out.status.success());
+    assert!(
+        out.stdout.is_empty(),
+        "a rejected --json add must not write partial output to stdout: {:?}",
+        String::from_utf8_lossy(&out.stdout)
     );
 }

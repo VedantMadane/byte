@@ -2,30 +2,70 @@
 
 use std::io::IsTerminal as _;
 
-use crate::cli::{Cli, Command};
+use crate::autostart;
+use crate::claude::detect::{ProcessProbe, SysinfoProbe};
+use crate::cli::{AutostartAction, Cli, Command};
 use crate::error::{Error, Result};
+use crate::lock::MutationGuard;
 use crate::ops::add::AddSession;
 use crate::ops::manage::{self, AccountListing};
 use crate::ops::switch::{SwitchOutcome, Switcher, SyncOutcome};
 use crate::output;
 use crate::paths::{HostPaths, RealPaths};
 use crate::store::secrets::{KeyringStore, SecretStore};
+use crate::tray;
 
 /// How often the add flow checks for a completed login.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
 pub fn run(cli: Cli) -> Result<()> {
     let paths = RealPaths::discover()?;
-    let switcher = Switcher::new(&paths, KeyringStore::new());
 
-    match cli.command {
-        None | Some(Command::List) => cmd_list(&switcher, cli.json),
-        Some(Command::Current) => cmd_current(&switcher, cli.json),
-        Some(Command::Switch { name }) => cmd_switch(&switcher, &name, cli.json),
-        Some(Command::Capture) => cmd_capture(&switcher, cli.json),
-        Some(Command::Add { timeout }) => cmd_add(&switcher, timeout, cli.json),
-        Some(Command::Remove { name, yes }) => cmd_remove(&switcher, &name, yes, cli.json),
-        Some(Command::Rename { name, label }) => cmd_rename(&switcher, &name, &label, cli.json),
+    // No arguments starts the tray rather than listing accounts (see
+    // `Cli::long_about`). Handled before `Switcher` even exists: `tray::run`
+    // takes `paths` by value, and every other branch below only ever needs a
+    // borrow of it.
+    let Some(command) = cli.command else {
+        return tray::run(paths);
+    };
+
+    let switcher = Switcher::new(&paths, KeyringStore::new());
+    let probe = SysinfoProbe::new();
+
+    // Read-only commands (list, current, autostart) do not take the
+    // mutation lock: they tolerate a concurrent write because every file
+    // byte writes is replaced atomically, so there is never a torn read to
+    // guard against.
+    match command {
+        Command::List => cmd_list(&switcher, cli.json),
+        Command::Current => cmd_current(&switcher, cli.json),
+        Command::Autostart { action } => cmd_autostart(action, cli.json),
+        Command::Switch { name } => {
+            // Bound to a named variable, not `_`: `let _ = ...` would drop
+            // the guard -- and release the lock -- immediately, before
+            // `cmd_switch` below ever ran. Naming it (with a leading
+            // underscore only to silence the unused-variable lint) keeps it
+            // alive until this arm's block ends, which is after the command
+            // completes.
+            let _guard = MutationGuard::acquire(&paths)?;
+            cmd_switch(&switcher, &name, cli.json, &probe)
+        }
+        Command::Capture => {
+            let _guard = MutationGuard::acquire(&paths)?;
+            cmd_capture(&switcher, cli.json)
+        }
+        // The only mutating arm that does NOT take the lock here: `cmd_add`
+        // takes it itself, after its confirmation prompt. See the comment at
+        // that acquisition for why the prompt must not be held under lock.
+        Command::Add { timeout, yes } => cmd_add(&switcher, timeout, yes, cli.json),
+        Command::Remove { name, yes } => {
+            let _guard = MutationGuard::acquire(&paths)?;
+            cmd_remove(&switcher, &name, yes, cli.json)
+        }
+        Command::Rename { name, label } => {
+            let _guard = MutationGuard::acquire(&paths)?;
+            cmd_rename(&switcher, &name, &label, cli.json)
+        }
     }
 }
 
@@ -78,6 +118,36 @@ fn cmd_current<P: HostPaths + Copy, S: SecretStore>(sw: &Switcher<P, S>, json: b
     Ok(())
 }
 
+fn cmd_autostart(action: AutostartAction, json: bool) -> Result<()> {
+    match action {
+        AutostartAction::Status => {
+            let on = autostart::status()?;
+            if json {
+                output::data(&serde_json::json!({ "autostart": on }).to_string());
+            } else if on {
+                output::info(&format!(
+                    "byte starts at login (via {}).",
+                    autostart::describe_location()
+                ));
+            } else {
+                output::info("byte does not start at login.");
+            }
+        }
+        AutostartAction::Enable => {
+            autostart::enable()?;
+            output::status(&format!(
+                "byte will start at login, via {}.",
+                autostart::describe_location()
+            ));
+        }
+        AutostartAction::Disable => {
+            autostart::disable()?;
+            output::status("byte will no longer start at login.");
+        }
+    }
+    Ok(())
+}
+
 fn report_sync(sync: &SyncOutcome) {
     if let SyncOutcome::Captured(meta) = sync {
         output::status(&format!("Saved previously unknown account {}", meta.label));
@@ -113,10 +183,33 @@ fn sync_json(sync: &SyncOutcome) -> serde_json::Value {
     }
 }
 
+/// The warning shown after a switch, or `None` when nothing is running.
+///
+/// Claude Code reads credentials at startup, so a session that is already
+/// running keeps the previous account until it restarts. `pub` (like
+/// `switch_json` and `resolve_add_failure`) specifically so this wording and
+/// its zero-count case are directly testable without a keychain -- see
+/// `tests/cli_run_test.rs`.
+pub fn running_sessions_warning(count: usize) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some(
+            "1 running Claude Code session still uses the previous account. \
+             Restart it to pick up the switch."
+                .to_string(),
+        ),
+        n => Some(format!(
+            "{n} running Claude Code sessions still use the previous account. \
+             Restart them to pick up the switch."
+        )),
+    }
+}
+
 fn cmd_switch<P: HostPaths + Copy, S: SecretStore>(
     sw: &Switcher<P, S>,
     name: &str,
     json: bool,
+    probe: &impl ProcessProbe,
 ) -> Result<()> {
     let outcome = sw.switch_to(name)?;
 
@@ -136,9 +229,9 @@ fn cmd_switch<P: HostPaths + Copy, S: SecretStore>(
         output::info(&format!("{} is already active.", switched_to.label));
     } else {
         output::status(&format!("Switched to {}", switched_to.label));
-        output::warn(
-            "Claude Code sessions already running keep the previous account until restarted.",
-        );
+        if let Some(msg) = running_sessions_warning(probe.running_claude_sessions()) {
+            output::warn(&msg);
+        }
     }
     Ok(())
 }
@@ -162,8 +255,42 @@ fn cmd_capture<P: HostPaths + Copy, S: SecretStore>(sw: &Switcher<P, S>, json: b
 pub fn cmd_add<P: HostPaths + Copy, S: SecretStore>(
     sw: &Switcher<P, S>,
     timeout: u64,
+    yes: bool,
     json: bool,
 ) -> Result<()> {
+    if !yes {
+        // The gate has to precede begin(): begin() is what logs Claude Code
+        // out, so confirming after it would be asking permission for
+        // something already done. Same non-interactive rule as `byte
+        // remove` -- a prompt would corrupt --json's machine-readable
+        // stdout, and on any non-terminal stdin it would block forever
+        // waiting for an answer nobody is there to give.
+        if json || !std::io::stdin().is_terminal() {
+            return Err(Error::ConfirmationRequired {
+                action: "byte add".into(),
+            });
+        }
+
+        if !output::confirm(&format!(
+            "Add an account? This logs Claude Code out now and waits up to {timeout}s for a new login."
+        )) {
+            output::info("Aborted; nothing was changed.");
+            return Ok(());
+        }
+    }
+
+    // Taken here rather than in `run`'s dispatch arm, and only once the
+    // confirmation above is settled. `output::confirm` blocks on stdin with
+    // no timeout, so a lock held across it is pinned open for as long as
+    // nobody answers -- and the tray now opens exactly that prompt in a
+    // spawned terminal on a single click. An unanswered one would make
+    // every tray menu account, and every `byte switch`/`capture`/`remove`/
+    // `rename` in any terminal, fail with `Error::Busy` indefinitely, while
+    // that error tells the user to "wait for it to finish" and nothing ever
+    // finishes. Everything below IS bounded -- by `--timeout` -- so it is
+    // legitimate to hold the lock across it.
+    let _guard = MutationGuard::acquire(sw.paths())?;
+
     let session = AddSession::begin(sw)?;
 
     output::status("Claude Code is now logged out.");

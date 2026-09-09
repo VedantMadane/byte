@@ -45,6 +45,7 @@ cargo install --path .
 byte capture
 
 # Log out, log in as a second account, and save it too
+# (asks for confirmation first — it logs Claude Code out)
 byte add
 
 # Optional: accounts are labeled by email by default — give them names you'll
@@ -61,21 +62,65 @@ byte switch personal
 
 | Command | Description |
 |---|---|
-| `byte` / `byte list` | List stored accounts; the active one is marked with `*` |
+| `byte` | Start the tray icon (Windows and macOS only — see [Tray](#tray); fails on other platforms) |
+| `byte list` | List stored accounts; the active one is marked with `*` |
 | `byte current` | Print the active account's label |
 | `byte switch <name>` | Switch to a stored account |
 | `byte capture` | Save the currently logged-in account |
-| `byte add [--timeout <secs>]` | Log out, then save the next account you log in as (default 300s) |
+| `byte add [--timeout <secs>] [--yes]` | Log out, then save the next account you log in as (default 300s; prompts before logging out unless `--yes` is given) |
 | `byte remove <name> [--yes]` | Forget a stored account (irreversible; prompts for confirmation unless `--yes` is given) |
 | `byte rename <name> <label>` | Change an account's display label |
+| `byte autostart enable\|disable\|status` | Opt in (or out) of starting the tray at login |
 
 `<name>` matches a label, an email address, or an account UUID prefix. Every
 command accepts `--json` for machine-readable output on stdout; status
 messages always go to stderr, so `--json` output can be piped safely.
-`byte remove` requires `--yes` under `--json` or when standard input isn't a
-terminal, since it can't prompt in either case.
+`byte add` and `byte remove` both require `--yes` under `--json` or when
+standard input isn't a terminal, since neither can prompt in either case —
+for `byte add` the check runs *before* it logs Claude Code out.
 
 See [`man/byte.md`](man/byte.md) for the full reference, or run `byte --help`.
+
+## Tray
+
+Running `byte` with no arguments — **on Windows and macOS only** — opens a
+tray icon instead of the CLI. Its menu lists every stored account, marking
+the same active one `byte list` does, plus **Add account…** and **Quit**.
+Clicking an account switches to it. Clicking **Add account…** opens a
+terminal running `byte add`, rather than adding the account in place: doing
+that means logging Claude Code out and waiting for an interactive login,
+which needs a console to prompt in and a human to answer. The terminal stops
+at a confirmation prompt, so a mis-aimed click in the notification area costs
+nothing — answer `n`, or close the window, and you stay logged in. The new
+account appears in the menu on its own once it's saved.
+
+Every notification is also written to the terminal the tray was started
+from, and the tooltip always names the active account (under autostart there is no console, so
+the tooltip is the one that remains). Both matter, because
+a notification the OS accepts is not one you necessarily see: on Windows 11
+byte's toasts were accepted and recorded in the notification database while
+none were ever drawn on screen, with success reported at every step. **If a
+menu click looks like it did nothing, read the tray's terminal** — the
+action almost certainly happened.
+
+Only one tray runs at a time; starting a second `byte` while one is already
+running reports that instead of opening a duplicate icon. The tray and the
+CLI cooperate rather than compete: a CLI `byte switch` updates the running
+tray's menu automatically (it watches `accounts.json` for changes), and a
+lock keeps a CLI mutation and a tray-driven one from interleaving their
+writes to the same files — held only for the write itself, except during
+`byte add`, which holds it while it waits for the new login — see [Configuration](docs/configuration.md)
+and [Troubleshooting](docs/troubleshooting.md) for both locks.
+
+On Linux (or any platform besides Windows and macOS), running `byte` with no
+arguments does not start a tray — its dependencies can't function there. It
+exits non-zero with an error pointing at the CLI commands above instead.
+
+The tray never starts itself at login. `byte autostart enable` opts in
+explicitly; `byte autostart status` reports whether it's registered, and
+`byte autostart disable` removes it. See
+[Configuration](docs/configuration.md) for exactly where each platform
+registers it.
 
 ## Configuration
 

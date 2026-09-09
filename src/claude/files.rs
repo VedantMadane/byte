@@ -116,28 +116,66 @@ impl<P: HostPaths> ClaudeFiles<P> {
     /// Uses `load()`, not `load_or_empty()` -- see `apply()`'s doc comment
     /// for why: this only ever runs on a machine that has already logged
     /// into Claude Code, so both files are expected to exist already.
+    ///
+    /// Rolled back exactly as `apply()` is, and for a sharper reason. This
+    /// commits the credentials file first, so a failure in the config half
+    /// would otherwise leave Claude Code logged out while reporting an
+    /// error describing only that second failure -- which reads like
+    /// nothing happened. And because the error propagates out of
+    /// `AddSession::begin`, no `AddSession` value is ever constructed, so
+    /// `abort()` and `resolve_add_failure` -- the whole "a failed add
+    /// restores you" apparatus -- never run either. `accounts.json` is
+    /// untouched at that point, so `byte current`, the tray tooltip, and
+    /// the menu's active marker would all still name an account the user is
+    /// no longer logged in as. That is the same "a safety mechanism guards
+    /// one commit point while another can fail after committing" shape this
+    /// codebase has now hit four times; see `atomic::prune`.
     pub fn clear(&self) -> Result<()> {
         let backups = self.paths.backup_dir();
 
         let creds_path = self.paths.claude_credentials();
         let mut creds = JsonDocument::load(&creds_path)?;
+        let original_creds = creds.clone();
         creds.remove(OAUTH_KEY);
-        creds.save(&creds_path, &backups)?;
 
+        if let Err(creds_error) = creds.save(&creds_path, &backups) {
+            return Err(rollback_credentials(
+                &original_creds,
+                &creds_path,
+                &backups,
+                creds_error,
+            ));
+        }
+
+        if let Err(config_error) = self.clear_config(&backups) {
+            return Err(rollback_credentials(
+                &original_creds,
+                &creds_path,
+                &backups,
+                config_error,
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// The config-file half of `clear()`, split out so its error can be
+    /// caught and turned into a credentials rollback -- the same shape
+    /// `apply_config` gives `apply()`.
+    fn clear_config(&self, backups: &Path) -> Result<()> {
         let cfg_path = self.paths.claude_config();
         let mut cfg = JsonDocument::load(&cfg_path)?;
         cfg.remove(ACCOUNT_KEY);
         cfg.remove(USER_ID_KEY);
-        cfg.save(&cfg_path, &backups)?;
-
-        Ok(())
+        cfg.save(&cfg_path, backups)
     }
 }
 
 /// Restore `creds_path` to `original`'s content after either half of
-/// `apply()` failed -- the credentials write itself, or the config-file half
-/// -- so the two files never end up disagreeing about which account is
-/// active.
+/// `apply()` or `clear()` failed -- the credentials write itself, or the
+/// config-file half -- so the two files never end up disagreeing about
+/// which account is active, and a failed call never leaves Claude Code
+/// logged out.
 ///
 /// Returns `cause` unchanged when the rollback succeeds. If the rollback
 /// itself fails, that is not silently swallowed: the caller gets
@@ -149,6 +187,24 @@ fn rollback_credentials(
     backups: &Path,
     cause: Error,
 ) -> Error {
+    // Nothing was committed if the file already holds exactly what
+    // `original` would write -- the common case, because every *pre-commit*
+    // failure of `creds.save` (permission denied, disk full, read-only
+    // volume, an unwritable backup directory) leaves the target untouched.
+    // Rolling back then fails again for the identical reason and reports
+    // `ApplyRollbackFailed` -- "the credentials and config files may now
+    // disagree about which account is active and must be checked by hand"
+    // -- for a no-op. That sends the user into backup recovery after
+    // nothing happened, where restoring a stale `.claude.json` would
+    // discard unrelated Claude Code state. Report the real cause instead.
+    // (Issue #10 part 2, reachable from `clear()` as well now that it
+    // rolls back too.)
+    if let (Ok(on_disk), Ok(expected)) = (std::fs::read(creds_path), original.to_bytes())
+        && on_disk == expected
+    {
+        return cause;
+    }
+
     match original.save(creds_path, backups) {
         Ok(()) => cause,
         Err(rollback_source) => Error::ApplyRollbackFailed {

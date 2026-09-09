@@ -43,12 +43,35 @@ Within that directory:
 |---|---|
 | `accounts.json` | Every stored account's metadata and which one is active: label, email, organization, UUID, billing type, organization role, subscription tier, the associated Claude Code `userID`, and added/last-used timestamps — in effect, the full `oauthAccount` profile Claude Code stores per account, plus display fields byte derives from it. No secrets: `accessToken`/`refreshToken` are never written here (see below). Safe to read directly. |
 | `backups/` | Timestamped copies of `.claude.json`, `.credentials.json`, and `accounts.json`, made before every write. The ten most recent per file are kept. See [Troubleshooting](troubleshooting.md) for how to restore one. |
+| `mutation.lock` | An empty file used only as an advisory OS lock, held for the duration of a single `switch`/`capture`/`add`/`remove`/`rename` — whichever process (CLI or tray) is doing it. Its content, if any, is not meaningful; only holding the lock is. Released automatically when that process exits, even on a crash. |
+| `tray.lock` | The same kind of advisory lock as `mutation.lock`, held for as long as the tray runs, so a second `byte` started with no arguments refuses to start a duplicate tray. Independent of `mutation.lock` — holding one never blocks the other. See [Troubleshooting](troubleshooting.md) for what each lock's contention error means. |
 
 `accounts.json` carries its own `schema` field, versioning the document's
 layout independently of the per-account credential schema below. byte
 refuses to load a file whose `schema` it does not recognize rather than risk
 misparsing it — see the troubleshooting entry for
 `unsupported accounts.json schema version`.
+
+## The tray and autostart
+
+Running `byte` with no arguments starts a tray icon on **Windows and macOS**
+(see [README](../README.md) for what it shows and how it behaves); on other
+platforms it prints a message and exits rather than starting anything, since
+the tray's dependencies cannot function there.
+
+The tray never starts at login on its own. `byte autostart enable` opts in by
+registering the current executable's path in one of these platform-specific
+locations — the exact place `byte autostart status` and `describe_location`
+report:
+
+| Platform | Registered in |
+|---|---|
+| Windows | The registry Run key, `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, under the value name `byte`. |
+| macOS | A LaunchAgent plist at `~/Library/LaunchAgents/fyi.jocke.byte.plist`. |
+| Linux | A `.desktop` entry at `~/.config/autostart/byte.desktop`. Since the tray itself is Windows/macOS only (see above), a `byte` launched this way exits immediately with the tray's own "unavailable" message — `byte autostart enable` does not currently check for this before registering. |
+
+`byte autostart disable` removes the entry, treating an already-absent one as
+success — so running either `enable` or `disable` twice in a row is harmless.
 
 ## Where credentials are stored
 

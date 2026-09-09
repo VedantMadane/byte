@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
     version,
     about = "Switch between Claude accounts",
     long_about = "Switch which Claude account Claude Code is authenticated as.\n\
-                  Run with no arguments to list stored accounts."
+                  Run with no arguments to start the tray icon."
 )]
 pub struct Cli {
     /// Emit machine-readable JSON on stdout.
@@ -47,6 +47,9 @@ pub enum Command {
         // users.
         #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..=86_400))]
         timeout: u64,
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
     },
     /// Forget a stored account.
     Remove {
@@ -63,4 +66,19 @@ pub enum Command {
         /// The new label.
         label: String,
     },
+    /// Start byte's tray automatically at login.
+    Autostart {
+        #[command(subcommand)]
+        action: AutostartAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AutostartAction {
+    /// Register byte to start at login.
+    Enable,
+    /// Remove byte from login items.
+    Disable,
+    /// Report whether byte starts at login.
+    Status,
 }

@@ -41,13 +41,15 @@ its identity) between Claude Code's live config files and a per-account
 store, touching only the specific keys it owns and leaving everything else
 in those files byte-for-byte untouched.
 
-Four layers, each depending only on the ones below it: `cli/` (argument
-parsing, `--json`, rendering — no file I/O or business logic of its own) →
+Four layers, each depending only on the ones below it. `cli/` (argument
+parsing, `--json`, rendering — no file I/O or business logic of its own) and
+`tray/` (the Windows/macOS tray app) sit together at the top as byte's two
+front ends →
 `ops/` (switch, add, manage — the operations, generic over the `HostPaths`
 and `SecretStore` traits rather than their concrete implementations) →
 `claude/` (reads and patches Claude Code's two files) and `store/` (account
-metadata and secrets) → `error.rs` / `output.rs` / `paths.rs` / `atomic.rs`
-(primitives used from every layer above). Nothing in a lower layer imports
+metadata and secrets) → `error.rs` / `output.rs` / `paths.rs` / `atomic.rs` /
+`lock.rs` / `autostart.rs` (primitives used from every layer above). Nothing in a lower layer imports
 from a higher one; production code instantiates
 `Switcher<&RealPaths, KeyringStore>`, tests instantiate
 `Switcher<&TestPaths, MemoryStore>` — the same generic types, no keychain or
@@ -116,6 +118,24 @@ config keys| `docs/configuration.md`
   [`docs/troubleshooting.md`](docs/troubleshooting.md) in the same change —
   that table claims to list every error byte can report, and has drifted
   from that claim more than once.
+- `lock::MutationGuard::acquire`/`try_acquire` must be bound to a named
+  variable (`let _guard = ...`), never to `_`. `let _ = MutationGuard::acquire(..)`
+  drops the guard — and releases the lock — immediately, before the command
+  it was meant to protect ever runs, silently defeating the whole mechanism.
+- Only mutating commands (`switch`, `capture`, `add`, `remove`, `rename`)
+  take `MutationGuard`. `list`, `current`, and `autostart` must not: every
+  file byte writes is replaced atomically, so a concurrent read is always
+  safe, and locking a read would make a running tray's momentary write
+  block something harmless.
+- The tray is Windows/macOS only, gated entirely inside `tray/mod.rs`
+  (`pub use app::run` there vs. an `unsupported::run` with the same
+  signature elsewhere). Call `tray::run(paths)` unconditionally from
+  anywhere else in the crate — no `cfg` at the call site — and add any new
+  platform-specific tray behavior inside that module, not around it.
+- `tray/app.rs`'s `Wake::TrayClick` arm must stay inert (no `rebuild()`, no
+  menu mutation of any kind): `TrayIconEvent::send` fires *before* the OS
+  shows byte's popup menu, so anything reacting there would `DestroyMenu` a
+  popup the OS is actively displaying, out from under the user's own click.
 
 ## Maintenance skills
 

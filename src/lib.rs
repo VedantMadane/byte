@@ -1,13 +1,16 @@
 //! byte — claude account switcher
 
 pub mod atomic;
+pub mod autostart;
 pub mod claude;
 pub mod cli;
 pub mod error;
+pub mod lock;
 pub mod ops;
 pub mod output;
 pub mod paths;
 pub mod store;
+pub mod tray;
 
 pub use error::{Error, Result};
 

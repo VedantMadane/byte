@@ -51,6 +51,9 @@ pub enum Error {
     #[error("secret store unavailable: {0}")]
     Secret(String),
 
+    #[error("tray error: {0}")]
+    Tray(String),
+
     #[error("failed to render JSON output: {0}")]
     Render(String),
 
@@ -86,6 +89,12 @@ pub enum Error {
 
     #[error("{action} needs confirmation; re-run with --yes to proceed without prompting")]
     ConfirmationRequired { action: String },
+
+    #[error(
+        "another byte process is currently changing accounts.\n\
+         Wait for it to finish and try again."
+    )]
+    Busy,
 }
 
 /// Convenience alias used throughout the crate.

@@ -19,9 +19,31 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive"] }
+fs4 = { version = "1.1.0", features = ["sync"] }
 keyring = { version = "4.1.6", features = ["apple-native-keyring-store", "windows-native-keyring-store", "zbus-secret-service-keyring-store"] }
+notify = "8.2.0"
+notify-rust = "4.17.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order", "float_roundtrip"] }
+sysinfo = "0.38.4"
 tempfile = "3.27.0"
 thiserror = "2.0.20"
 time = { version = "0.3.55", features = ["formatting", "parsing", "macros", "serde"] }
+
+# `cfg(windows)`, not a single triple: `src/autostart.rs` gates its winreg
+# consumer on `#[cfg(windows)]`, which is every `*-pc-windows-*` target.
+# Keyed to one triple, aarch64/gnu/i686 Windows builds fail to resolve the
+# crate -- and CI (windows-latest, x86_64) would never catch it.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56.0"
+
+# The tray (`src/tray/app.rs`) is Windows- and macOS-only: `tray-icon`
+# requires a GTK event loop on Linux that this crate's `winit` loop never
+# pumps, so the icon and menu could not function there even if it built --
+# and building it there means pulling in GTK/libxdo/libappindicator as
+# build-time dependencies, with no apt step for them in this project's CI.
+# Gating them here means Linux never resolves either crate at all. See
+# `src/tray/mod.rs` for the matching `cfg` on the `app` module itself.
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+tray-icon = "0.24.2"
+winit = "0.30.13"

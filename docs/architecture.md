@@ -16,10 +16,13 @@ src/
   output.rs        the only place allowed to call println!/eprintln!
   paths.rs         HostPaths trait; RealPaths (env + home dir) and TestPaths (tempdir)
   atomic.rs        atomic file replace, timestamped backup, backup pruning
+  lock.rs          MutationGuard (per-write) and InstanceGuard (per-tray-lifetime) advisory locks
+  autostart.rs     register/unregister byte's tray as a login item, per platform
   claude/
     document.rs    JsonDocument — load/patch/save JSON preserving key order and style
     snapshot.rs    AccountSnapshot type, field accessors, validation
     files.rs       ClaudeFiles — capture/apply/clear a snapshot against the live files
+    detect.rs      ProcessProbe trait + SysinfoProbe — counts running Claude Code sessions
   store/
     metadata.rs    AccountsFile, AccountMeta — accounts.json, name resolution
     secrets.rs     SecretStore trait (oauth block only), KeyringStore (OS keychain), MemoryStore (tests)
@@ -30,41 +33,72 @@ src/
   cli/
     mod.rs         clap command definitions (the Cli and Command types)
     run.rs         dispatches a parsed Cli to an op and renders the result
+  tray/
+    mod.rs         platform gate: re-exports app::run on Windows/macOS, an honest Error::Tray elsewhere
+    app.rs         the winit/tray-icon event loop (Windows/macOS only): builds the tray, dispatches menu and click events
+    menu.rs        MenuModel — turns an account listing into the menu's entries, independent of any UI toolkit
+    events.rs      classifies a raw menu/tray event into an Action, independent of winit/tray-icon types
+    launch.rs      builds the cmd.exe / AppleScript command that opens a terminal running `byte add`
+    notify.rs      best-effort desktop notifications after a tray-driven switch
+    watch.rs       AccountsWatcher — watches accounts.json for external changes and triggers a menu rebuild
 ```
-
-`src/tray/*` and `src/claude/detect.rs` (running-process detection) are
-deferred to a later plan; nothing in the current tree depends on them.
 
 ## Dependency direction
 
-Dependencies flow one way, from the CLI down to the primitives. Nothing in a
-lower layer imports from a higher one:
+Dependencies flow one way, from the CLI and the tray down to the primitives.
+Nothing in a lower layer imports from a higher one:
 
 ```
 main.rs
-  └── cli::run
-        └── ops (switch, add, manage)
-              ├── claude (document, snapshot, files)
-              ├── store (metadata, secrets)
-              └── paths
+  └── cli::run::run
+        ├── no arguments: tray::run
+        │     │  (== app::run on Windows/macOS; an immediate Error::Tray elsewhere)
+        │     ├── tray (menu, events, launch, notify, watch)
+        │     ├── ops (switch, manage)
+        │     ├── claude::detect   (the running-sessions notification)
+        │     └── lock (MutationGuard, InstanceGuard)
+        └── a command: ops (switch, add, manage) / autostart
+              ├── claude::detect   (the running-sessions warning)
+              └── lock (MutationGuard, mutating commands only)
+
+ops (switch, add, manage)
+  ├── claude (document, snapshot, files)
+  ├── store (metadata, secrets)
+  └── paths
+
 error, output, paths, atomic
   are used from every layer above them
 ```
 
-- **`cli/`** is the only layer that knows about argument parsing, `--json`,
-  and human-readable formatting. It calls into `ops` and renders whatever
-  comes back; it contains no file I/O or business logic of its own.
-- **`ops/`** composes `claude/` and `store/` into the operations the CLI
-  exposes (switch, add, list, ...). It is generic over the `HostPaths` and
-  `SecretStore` traits rather than depending on their concrete
-  implementations, which is what lets the test suite exercise the full
-  algorithm against a `TempDir` and an in-memory store with no keychain and
-  no real Claude Code installation.
+- **`cli/`** and **`tray/`** sit at the same layer: both are entry points
+  that call down into `ops`, `lock`, `claude::detect`, and (`cli/` only)
+  `autostart`, and neither is a dependency of the other. `main.rs` picks
+  between them once, based on whether any command-line arguments were given
+  (`cli::run::run` itself makes that choice and calls `tray::run` directly
+  for the no-arguments case) — nothing downstream needs to know which one is
+  driving it. `cli/` renders to stdout/stderr via `output.rs`; `tray/`
+  renders to the tray icon, its menu, and best-effort OS notifications
+  (`tray::notify`), but both call the same `ops` functions to actually
+  change anything, and both take the same `lock::MutationGuard` around a
+  write for the same reason: so a CLI switch and a tray switch can never
+  interleave.
+- **`ops/`** composes `claude/` and `store/` into the operations both
+  front ends expose (switch, add, list, ...). It is generic over the
+  `HostPaths` and `SecretStore` traits rather than depending on their
+  concrete implementations, which is what lets the test suite exercise the
+  full algorithm against a `TempDir` and an in-memory store with no
+  keychain and no real Claude Code installation.
 - **`claude/`** knows the shape of Claude Code's two files and how to
-  capture and apply an `AccountSnapshot` against them, but nothing about
-  where those files live or how accounts are stored between switches.
+  capture and apply an `AccountSnapshot` against them, and (`detect.rs`)
+  how to count running Claude Code processes on the host — but nothing
+  about where the config files live or how accounts are stored between
+  switches.
 - **`store/`** knows how to persist account metadata and secrets, but
   nothing about Claude Code's file formats.
+- **`lock.rs`** and **`autostart.rs`** are used by `cli/` and/or `tray/`
+  but depend on nothing above `paths` and `error`; `tray/`'s own submodules
+  (`menu.rs`, `events.rs`) are in turn kept independent of `ops` and the
+  windowing toolkit so they stay unit-testable without either.
 - **`error.rs`**, **`output.rs`**, **`paths.rs`**, and **`atomic.rs`** are
   primitives with no dependency on anything above them.
 
@@ -104,8 +138,12 @@ error, output, paths, atomic
 
 1. `main.rs` parses argv into a `Cli` via `clap::Parser`.
 2. `cli::run::run` builds a `Switcher<&RealPaths, KeyringStore>` from
-   `RealPaths::discover()` (honoring `CLAUDE_CONFIG_DIR` / `BYTE_CONFIG_DIR`)
-   and dispatches on the parsed `Command`.
+   `RealPaths::discover()` (honoring `CLAUDE_CONFIG_DIR` / `BYTE_CONFIG_DIR`),
+   and dispatches on the parsed `Command`. For the mutating commands only
+   (`switch`, `capture`, `add`, `remove`, `rename`) that arm first takes
+   `lock::MutationGuard`, so a concurrent tray-driven switch cannot
+   interleave its writes with this one; `list`, `current`, and `autostart`
+   never take it.
 3. `cmd_switch` calls `Switcher::switch_to("work")`, which: resolves `"work"`
    against `accounts.json` before touching anything; syncs the currently
    live account back to the store so a token Claude Code rotated isn't lost;
