@@ -489,3 +489,58 @@ fn clear_rolls_back_credentials_when_the_config_write_fails() {
         "a failed clear() must leave the user logged IN, not silently logged out: {after_creds}"
     );
 }
+
+/// Paths whose byte config directory -- and so the backup directory under
+/// it -- can never be created, so the very first step of any `save` fails
+/// while both Claude files stay untouched.
+struct UnwritableBackupPaths<'a> {
+    inner: &'a TestPaths,
+}
+
+impl HostPaths for UnwritableBackupPaths<'_> {
+    fn claude_config(&self) -> std::path::PathBuf {
+        self.inner.claude_config()
+    }
+    fn claude_credentials(&self) -> std::path::PathBuf {
+        self.inner.claude_credentials()
+    }
+    fn byte_config_dir(&self) -> std::path::PathBuf {
+        self.inner.root().join("not-a-directory").join("byte")
+    }
+}
+
+#[test]
+fn a_precommit_failure_reports_its_own_cause_not_a_rollback_failure() {
+    // Issue #10 part 2, made more reachable by giving `clear()` a rollback:
+    // every pre-commit failure of `creds.save` (permission denied, disk
+    // full, read-only volume) recurs identically on the rollback attempt,
+    // so routing it through `rollback_credentials` would report
+    // `ApplyRollbackFailed` -- "the credentials and config files may now
+    // disagree about which account is active and must be checked by hand"
+    // -- when nothing was written and the two files are perfectly
+    // consistent. That sends the user into backup recovery after a no-op,
+    // where restoring a stale `.claude.json` would discard unrelated Claude
+    // Code state. Nothing was committed, so the real cause must survive.
+    let tp = TestPaths::new().unwrap();
+    seed(&tp, "uuid-1", "a@example.com", "refresh-1");
+    std::fs::write(
+        tp.root().join("not-a-directory"),
+        b"blocks directory creation",
+    )
+    .unwrap();
+
+    let before_creds = std::fs::read_to_string(tp.claude_credentials()).unwrap();
+    let paths = UnwritableBackupPaths { inner: &tp };
+
+    let err = ClaudeFiles::new(&paths).clear().unwrap_err();
+
+    assert!(
+        !matches!(err, byte::Error::ApplyRollbackFailed { .. }),
+        "nothing was committed, so this must report its own cause: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tp.claude_credentials()).unwrap(),
+        before_creds,
+        "the credentials file must be untouched"
+    );
+}

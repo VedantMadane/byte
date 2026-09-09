@@ -187,6 +187,24 @@ fn rollback_credentials(
     backups: &Path,
     cause: Error,
 ) -> Error {
+    // Nothing was committed if the file already holds exactly what
+    // `original` would write -- the common case, because every *pre-commit*
+    // failure of `creds.save` (permission denied, disk full, read-only
+    // volume, an unwritable backup directory) leaves the target untouched.
+    // Rolling back then fails again for the identical reason and reports
+    // `ApplyRollbackFailed` -- "the credentials and config files may now
+    // disagree about which account is active and must be checked by hand"
+    // -- for a no-op. That sends the user into backup recovery after
+    // nothing happened, where restoring a stale `.claude.json` would
+    // discard unrelated Claude Code state. Report the real cause instead.
+    // (Issue #10 part 2, reachable from `clear()` as well now that it
+    // rolls back too.)
+    if let (Ok(on_disk), Ok(expected)) = (std::fs::read(creds_path), original.to_bytes())
+        && on_disk == expected
+    {
+        return cause;
+    }
+
     match original.save(creds_path, backups) {
         Ok(()) => cause,
         Err(rollback_source) => Error::ApplyRollbackFailed {
