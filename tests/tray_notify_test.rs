@@ -6,7 +6,7 @@
 
 use byte::ops::switch::{SwitchOutcome, SyncOutcome};
 use byte::store::metadata::AccountMeta;
-use byte::tray::notify::switch_message;
+use byte::tray::notify::{console_line, switch_message};
 
 fn meta(label: &str) -> AccountMeta {
     AccountMeta {
@@ -96,4 +96,40 @@ fn a_fresh_switch_does_not_say_already() {
     let (title, body) = switch_message(&outcome(false), 0);
     let text = format!("{title} {body}").to_lowercase();
     assert!(!text.contains("already"), "{title} / {body}");
+}
+
+// `send`'s other half: the line it mirrors to stderr. A toast is best-effort
+// -- Windows accepted and stored byte's toasts while displaying none of them
+// -- so the mirrored line is the only feedback a tray action is guaranteed
+// to produce. Its content is pinned here for the same reason
+// `switch_message`'s is: it is the part a test can actually read back.
+
+#[test]
+fn a_console_line_carries_both_the_title_and_the_body() {
+    let line = console_line("Switched to work", "Claude Code will use this account now.");
+    assert!(line.contains("Switched to work"), "title missing: {line}");
+    assert!(
+        line.contains("Claude Code will use this account now."),
+        "body missing: {line}"
+    );
+}
+
+#[test]
+fn a_console_line_separates_the_title_from_the_body() {
+    // `format!("{title}{body}")` would satisfy the test above while running
+    // the two together as "Switch failedthe account is gone".
+    let line = console_line("Switch failed", "the account is gone");
+    assert!(
+        !line.contains("failedthe"),
+        "title and body must be separated: {line}"
+    );
+}
+
+#[test]
+fn a_console_line_is_a_single_line() {
+    // It goes to stderr as one line per notification; an embedded newline
+    // would split one notification into two apparent messages in the
+    // terminal the tray was launched from.
+    let line = console_line("Switch failed", "the account is gone");
+    assert!(!line.contains('\n'), "should not wrap: {line}");
 }

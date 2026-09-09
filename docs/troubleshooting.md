@@ -47,7 +47,21 @@ A few behaviors worth calling out even though they aren't errors:
   Clicking it shows a notification pointing at `byte add` instead. Adding an
   account means logging Claude Code out and waiting for an interactive login
   — a menu click has no way to supervise that, so the tray hands it off to
-  the one command that can.
+  the one command that can. That message is printed to the terminal the tray
+  was started from as well, so the click is never silent even when the
+  notification isn't drawn — see the next entry.
+- **Tray notifications never appear.** byte's notifications are best-effort:
+  it asks the OS to show one and has no way to learn whether anything was
+  drawn. On Windows 11 this has been observed to fail completely and
+  silently — the toasts were accepted, written to the notification database,
+  and never displayed, with the API reporting success at every step and
+  nothing to log. The tray is not broken when this happens and the action
+  the notification described did take place. Every notification is also
+  printed to the terminal the tray was started from, and the tooltip always
+  names the active account; use those to confirm what happened. To get the
+  toasts themselves back, check Windows' Do Not Disturb setting and the
+  per-app notification settings for **Windows PowerShell** — that is the app
+  identity byte's toasts are sent under.
 - **Any failure while `byte add` is waiting for a login** — a timeout, or
   anything else, such as a parse error from catching Claude Code mid-write
   to one of its files — always triggers a restore attempt before the error

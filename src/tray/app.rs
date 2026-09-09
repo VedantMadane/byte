@@ -188,12 +188,18 @@ impl App {
 
         if let Some(tray) = &self.tray {
             tray.set_menu(Some(Box::new(menu)));
-            // The tooltip is set on every rebuild, unconditionally: desktop
-            // notifications are best-effort and were found (Task 6) to
-            // silently not display for an unpackaged binary on Windows, so
-            // the tooltip naming the active account is the one feedback
-            // channel known to work -- which is exactly why its own
-            // `Result` must not be discarded either.
+            // The tooltip is set on every rebuild, unconditionally:
+            // desktop notifications are best-effort, and were measured on
+            // Windows 11 to be accepted by the OS, written to the
+            // notification database, and then drawn for nobody -- reporting
+            // success at every step, so nothing was logged. (Not, as first
+            // recorded, because an unpackaged binary lacks a registered
+            // AppUserModelID: notify-rust sends under Windows' own
+            // registered PowerShell AppID, and the toasts did arrive in the
+            // store.) The tooltip naming the active account, together with
+            // the stderr line `notify::send` mirrors, is therefore the
+            // feedback that does not depend on a toast being drawn -- which
+            // is exactly why its own `Result` must not be discarded either.
             let active = self
                 .model
                 .entries

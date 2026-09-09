@@ -87,10 +87,15 @@ one marked, same as `byte list`), plus **Add account…** and **Quit**.
 Clicking an account switches to it; clicking **Add account…** shows a
 notification pointing at `byte add` instead of performing it directly, since
 adding an account means logging Claude Code out and waiting for an
-interactive login — something a menu click can't supervise. The tooltip
-always names the active account, which is the one feedback channel
-guaranteed to work even where desktop notifications silently don't (observed
-on an unpackaged Windows build).
+interactive login — something a menu click can't supervise.
+
+Every notification is also written to the terminal the tray was started
+from, and the tooltip always names the active account. Both matter, because
+a notification the OS accepts is not one you necessarily see: on Windows 11
+byte's toasts were accepted and recorded in the notification database while
+none were ever drawn on screen, with success reported at every step. **If a
+menu click looks like it did nothing, read the tray's terminal** — the
+action almost certainly happened.
 
 Only one tray runs at a time; starting a second `byte` while one is already
 running reports that instead of opening a duplicate icon. The tray and the
