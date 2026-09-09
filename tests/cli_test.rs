@@ -299,7 +299,13 @@ fn add_timeout_from_a_logged_out_start_does_not_claim_a_false_restoration() {
     std::fs::write(tp.root().join(".credentials.json"), "{}").unwrap();
     std::fs::write(tp.root().join(".claude.json"), "{}").unwrap();
 
-    let out = byte(&tp, &["add", "--timeout", "1"]);
+    // `--yes` is required to get past the confirmation gate to the timeout
+    // path this test is about; stdin is Stdio::null() here, so without it
+    // the run stops at the gate and never reaches AddSession::begin. Safe
+    // for the same reason the rest of this test is: both files are seeded
+    // empty, so capture_current() short-circuits to NotLoggedIn before the
+    // secret store is ever touched.
+    let out = byte(&tp, &["add", "--timeout", "1", "--yes"]);
 
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -354,5 +360,54 @@ fn long_help_no_longer_claims_no_args_lists_accounts() {
     assert!(
         text.to_lowercase().contains("tray"),
         "long_about should describe the tray:\n{text}"
+    );
+}
+
+// The tests below cover `byte add`'s confirmation gate. Like the `remove`
+// ones above, they stop AT the gate rather than passing `--yes`, so none of
+// them reaches AddSession::begin -- which logs Claude Code out and, for
+// this compiled binary, talks to a REAL OS keychain.
+
+#[test]
+fn add_without_yes_requires_confirmation_on_non_interactive_stdin() {
+    let tp = TestPaths::new().unwrap();
+    std::fs::write(tp.root().join(".credentials.json"), "{}").unwrap();
+    std::fs::write(tp.root().join(".claude.json"), "{}").unwrap();
+
+    let out = byte(&tp, &["add", "--timeout", "1"]);
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--yes"),
+        "expected a hint to pass --yes on non-interactive stdin, got:
+{stderr}"
+    );
+    // The gate has to come BEFORE the logout, not after it. A run that
+    // reached AddSession::begin would have waited out the one-second
+    // timeout and reported on restoring; seeing that wording here would
+    // mean byte logged the user out and only then asked permission.
+    assert!(
+        !stderr.contains("Nothing to restore") && !stderr.contains("Timed out"),
+        "the confirmation must gate the logout, not follow it:
+{stderr}"
+    );
+}
+
+#[test]
+fn add_json_without_yes_requires_confirmation_and_emits_no_stdout() {
+    // --json must never prompt (it would corrupt machine-readable stdout)
+    // -- it requires --yes outright, same as non-interactive stdin.
+    let tp = TestPaths::new().unwrap();
+    std::fs::write(tp.root().join(".credentials.json"), "{}").unwrap();
+    std::fs::write(tp.root().join(".claude.json"), "{}").unwrap();
+
+    let out = byte(&tp, &["add", "--timeout", "1", "--json"]);
+
+    assert!(!out.status.success());
+    assert!(
+        out.stdout.is_empty(),
+        "a rejected --json add must not write partial output to stdout: {:?}",
+        String::from_utf8_lossy(&out.stdout)
     );
 }

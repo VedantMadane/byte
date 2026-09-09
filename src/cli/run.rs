@@ -54,9 +54,9 @@ pub fn run(cli: Cli) -> Result<()> {
             let _guard = MutationGuard::acquire(&paths)?;
             cmd_capture(&switcher, cli.json)
         }
-        Command::Add { timeout } => {
+        Command::Add { timeout, yes } => {
             let _guard = MutationGuard::acquire(&paths)?;
-            cmd_add(&switcher, timeout, cli.json)
+            cmd_add(&switcher, timeout, yes, cli.json)
         }
         Command::Remove { name, yes } => {
             let _guard = MutationGuard::acquire(&paths)?;
@@ -255,8 +255,30 @@ fn cmd_capture<P: HostPaths + Copy, S: SecretStore>(sw: &Switcher<P, S>, json: b
 pub fn cmd_add<P: HostPaths + Copy, S: SecretStore>(
     sw: &Switcher<P, S>,
     timeout: u64,
+    yes: bool,
     json: bool,
 ) -> Result<()> {
+    if !yes {
+        // The gate has to precede begin(): begin() is what logs Claude Code
+        // out, so confirming after it would be asking permission for
+        // something already done. Same non-interactive rule as `byte
+        // remove` -- a prompt would corrupt --json's machine-readable
+        // stdout, and on any non-terminal stdin it would block forever
+        // waiting for an answer nobody is there to give.
+        if json || !std::io::stdin().is_terminal() {
+            return Err(Error::ConfirmationRequired {
+                action: "byte add".into(),
+            });
+        }
+
+        if !output::confirm(&format!(
+            "Add an account? This logs Claude Code out now and waits up to {timeout}s for a new login."
+        )) {
+            output::info("Aborted; nothing was changed.");
+            return Ok(());
+        }
+    }
+
     let session = AddSession::begin(sw)?;
 
     output::status("Claude Code is now logged out.");

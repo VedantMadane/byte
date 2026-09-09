@@ -39,6 +39,7 @@ use crate::output;
 use crate::paths::RealPaths;
 use crate::store::secrets::KeyringStore;
 use crate::tray::events::{Action, TrayEventKind, action_for_menu_id, is_actionable_tray_event};
+use crate::tray::launch;
 use crate::tray::menu::{MenuEntry, MenuModel};
 use crate::tray::notify;
 use crate::tray::watch::AccountsWatcher;
@@ -227,13 +228,24 @@ impl App {
                 event_loop.exit();
             }
             Action::AddAccount => {
-                // `add` logs the user out and waits for an interactive login,
-                // which a menu click cannot supervise. Point at the command
-                // that can.
-                notify::send(
-                    "Add an account",
-                    "Run `byte add` in a terminal — it logs Claude Code out and waits for the new login.",
-                );
+                // `add` logs Claude Code out and then waits for an
+                // interactive login: it needs a console to prompt in and a
+                // human to answer it, neither of which a menu click
+                // supplies. So the click opens a terminal that has both,
+                // and that terminal stops at `byte add`'s confirmation
+                // prompt -- which is what keeps a mis-aimed click in the
+                // notification area from logging anyone out. Nothing is
+                // passed to skip that prompt; see `launch`'s module doc.
+                match launch::spawn_add() {
+                    Ok(()) => notify::send(
+                        "Adding an account",
+                        "A terminal opened — confirm there to log Claude Code out and log in as the account to add.",
+                    ),
+                    Err(e) => notify::send(
+                        "Could not open a terminal",
+                        &format!("Run `byte add` in one yourself. ({e})"),
+                    ),
+                }
             }
             Action::SwitchTo(uuid) => {
                 // Held only for the switch itself, and dropped before the

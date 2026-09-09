@@ -26,6 +26,7 @@ what's quoted here.
 | `write verification failed for <path>, and restoring the pre-write backup afterwards also failed` | The rare double failure: a write didn't verify, and byte's own attempt to restore the pre-write backup over it *also* failed. The file may now hold neither the old nor the new content. | Follow "Recovering from a backup" below for the named file, then confirm with `claude` and `byte current` that it looks right. |
 | applying the account snapshot failed, and rolling back `<path>` afterwards also failed | The rarest failure: writing the credentials file or the config-file half of a switch failed, and restoring the credentials file to its pre-switch state *also* failed. The two files may now disagree about which account is active. | Follow "Recovering from a backup" below for both `.claude.json` and `.credentials.json`, then confirm with `claude` and `byte current` that they agree. |
 | `timed out after N seconds waiting for a new login` (`byte add`) | Nobody logged in as a different account within the timeout. | Retry `byte add`, optionally with a longer `--timeout`, and log in via `claude` promptly. |
+| `byte add needs confirmation; re-run with --yes to proceed without prompting` | `byte add` logs Claude Code out before it starts waiting for a new login, so it refuses to do that unattended: standard input isn't a terminal (a script, cron, or CI), or `--json` is set (a prompt would corrupt machine-readable output). Nothing was logged out — the check runs before the logout, not after it. | Re-run with `--yes` if you're sure, or run it interactively without `--json` to be prompted instead. |
 | `byte remove needs confirmation; re-run with --yes to proceed without prompting` | `byte remove` deletes a keychain entry with no backup, so it refuses to run unattended: standard input isn't a terminal (a script, cron, or CI), or `--json` is set (a prompt would corrupt machine-readable output). | Re-run with `--yes` if you're sure, or run it interactively without `--json` to be prompted instead. |
 | `another byte process is currently changing accounts...` | Another byte process — often the tray — already holds the mutation lock (`mutation.lock` in byte's config directory) because it's mid-switch, mid-capture, or mid-add/remove/rename. byte refused to start a second write sequence rather than risk two processes interleaving writes to the same files. Nothing was read or changed. | Wait a moment for the other process to finish, then retry. The lock is an OS-level advisory lock tied to that process's open file handle, so it is always released automatically if that process exits or crashes — there is no lock file to delete by hand. |
 
@@ -43,11 +44,13 @@ A few behaviors worth calling out even though they aren't errors:
   sessions and, only if it finds at least one, prints a reminder that they
   keep using the previous account until restarted; with none running, it
   says nothing.
-- **The tray's "Add account…" menu item never adds an account itself.**
-  Clicking it shows a notification pointing at `byte add` instead. Adding an
-  account means logging Claude Code out and waiting for an interactive login
-  — a menu click has no way to supervise that, so the tray hands it off to
-  the one command that can. That message is printed to the terminal the tray
+- **The tray's "Add account…" menu item opens a terminal.** It doesn't add
+  the account in place: that means logging Claude Code out and waiting for an
+  interactive login, which needs a console to prompt in and a human to answer
+  — neither of which a menu click supplies. The terminal stops at `byte
+  add`'s confirmation prompt, so a mis-aimed click costs nothing: answer `n`,
+  or close the window, and you stay logged in. If no terminal opens, the
+  notification says so and you can run `byte add` in one yourself. That message is printed to the terminal the tray
   was started from as well, so the click is never silent even when the
   notification isn't drawn — see the next entry.
 - **Tray notifications never appear.** byte's notifications are best-effort:

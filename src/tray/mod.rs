@@ -1,6 +1,7 @@
 //! The tray application.
 
 pub mod events;
+pub mod launch;
 pub mod menu;
 pub mod notify;
 pub mod watch;

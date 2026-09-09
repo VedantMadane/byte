@@ -280,7 +280,9 @@ fn cmd_add_restores_the_previous_account_when_poll_once_fails() {
     };
     let sw = Switcher::new(&paths, MemoryStore::new());
 
-    let result = cmd_add(&sw, 300, false);
+    // `yes = true`: this test is about the poll-failure path, which sits
+    // past the confirmation gate added for the tray's Add account item.
+    let result = cmd_add(&sw, 300, true, false);
 
     // The poll_once error (Error::Parse, from the corrupted .claude.json)
     // is what must be reported -- proving cmd_add actually observed the

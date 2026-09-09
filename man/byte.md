@@ -38,9 +38,12 @@ instead of starting anything.
 **capture**
 : Save the currently logged-in account.
 
-**add** \[**--timeout** *SECONDS*]
+**add** \[**--timeout** *SECONDS*] \[**--yes**]
 : Log Claude Code out, then wait for you to log in as a different account and
-  save it automatically. Defaults to 300 seconds.
+  save it automatically. Defaults to 300 seconds. Prompts for confirmation
+  *before* logging out when standard input is a terminal and **--json** is not
+  set; otherwise **--yes** is required. The tray's **Add account...** item
+  opens a terminal running this command, and relies on that prompt.
 
 **remove** *NAME* \[**--yes**]
 : Forget a stored account, deleting both its metadata and its stored

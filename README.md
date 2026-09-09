@@ -66,7 +66,7 @@ byte switch personal
 | `byte current` | Print the active account's label |
 | `byte switch <name>` | Switch to a stored account |
 | `byte capture` | Save the currently logged-in account |
-| `byte add [--timeout <secs>]` | Log out, then save the next account you log in as (default 300s) |
+| `byte add [--timeout <secs>] [--yes]` | Log out, then save the next account you log in as (default 300s; prompts before logging out unless `--yes` is given) |
 | `byte remove <name> [--yes]` | Forget a stored account (irreversible; prompts for confirmation unless `--yes` is given) |
 | `byte rename <name> <label>` | Change an account's display label |
 | `byte autostart enable\|disable\|status` | Opt in (or out) of starting the tray at login |
@@ -84,10 +84,13 @@ See [`man/byte.md`](man/byte.md) for the full reference, or run `byte --help`.
 Running `byte` with no arguments — **on Windows and macOS only** — opens a
 tray icon instead of the CLI. Its menu lists every stored account (the active
 one marked, same as `byte list`), plus **Add account…** and **Quit**.
-Clicking an account switches to it; clicking **Add account…** shows a
-notification pointing at `byte add` instead of performing it directly, since
-adding an account means logging Claude Code out and waiting for an
-interactive login — something a menu click can't supervise.
+Clicking an account switches to it. Clicking **Add account…** opens a
+terminal running `byte add`, rather than adding the account in place: doing
+that means logging Claude Code out and waiting for an interactive login,
+which needs a console to prompt in and a human to answer. The terminal stops
+at a confirmation prompt, so a mis-aimed click in the notification area costs
+nothing — answer `n`, or close the window, and you stay logged in. The new
+account appears in the menu on its own once it's saved.
 
 Every notification is also written to the terminal the tray was started
 from, and the tooltip always names the active account. Both matter, because

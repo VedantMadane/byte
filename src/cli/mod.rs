@@ -47,6 +47,9 @@ pub enum Command {
         // users.
         #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..=86_400))]
         timeout: u64,
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
     },
     /// Forget a stored account.
     Remove {
